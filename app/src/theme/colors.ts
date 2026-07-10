@@ -1,19 +1,35 @@
 export const colors = {
   // Base
-  background: '#0E0E10',
+  background: '#050505', // Deep black
   
   // Neutrals
-  textPrimary: '#F5F5F5',
-  textSecondary: '#9A9A9E',
-  textDisabled: '#5A5A5E',
-  surface: '#1A1A1E',
-  surfaceLight: '#2A2A2E',
+  textPrimary: '#FFFFFF',
+  textSecondary: '#888888',
+  textDisabled: '#444444',
+  surface: '#151515', 
+  surfaceLight: '#252525',
 
-  // Accents per screen
+  // Vibrant Accents (Exciting Neon/Pastel Palette)
+  cardColors: [
+    '#FF6B6B', // Neon Coral
+    '#FEE140', // Electric Yellow
+    '#18FF92', // Acid Green
+    '#00F2FE', // Cyan
+    '#B06AB3', // Magenta
+    '#FF8A00', // Blaze Orange
+  ],
+
   accents: {
-    home: '#4FD1C5',      // Muted cyan
-    notebook: '#F2A65A',  // Warm amber
-    note: '#9D8CFF',      // Soft violet
-    chat: '#5CE187',      // Signal green
+    home: '#FF6B6B',
+    notebook: '#FEE140',
+    note: '#18FF92',
+    chat: '#00F2FE',
   },
+
+  actions: {
+    signIn: '#22C55E',
+    signUp: '#3B82F6',
+    signOut: '#EF4444',
+    forgotPassword: '#FFFFFF',
+  }
 };

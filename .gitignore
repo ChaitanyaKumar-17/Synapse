@@ -1,0 +1,40 @@
+# Reference images in root directory only
+/*.jpg
+/*.jpeg
+/*.png
+/*.webp
+/*.gif
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Supabase local data
+supabase/.temp/
+supabase/.branch/
+
+# Temp files
+*.tmp
+*.bak
+*~

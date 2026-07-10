@@ -2,54 +2,51 @@ import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { View, Text, StyleSheet } from 'react-native';
 import { colors } from '../theme/colors';
+import { useAuthStore } from '../store/authStore';
+import { AuthScreen } from '../screens/AuthScreen';
+import { HomeScreen } from '../screens/HomeScreen';
+import { NotebookScreen } from '../screens/NotebookScreen';
+import { NoteScreen } from '../screens/NoteScreen';
 
-// Placeholder screens for Phase 0
-const HomeScreen = () => (
-  <View style={[styles.container, { borderColor: colors.accents.home, borderWidth: 4 }]}>
-    <Text style={styles.text}>Home (Notebooks List)</Text>
-  </View>
-);
-
-const NotebookScreen = () => (
-  <View style={[styles.container, { borderColor: colors.accents.notebook, borderWidth: 4 }]}>
-    <Text style={styles.text}>Notebook View (Notes List)</Text>
-  </View>
-);
-
-const NoteScreen = () => (
-  <View style={[styles.container, { borderColor: colors.accents.note, borderWidth: 4 }]}>
-    <Text style={styles.text}>Note Editor</Text>
-  </View>
-);
-
+// Placeholders for remaining screens
 const ChatScreen = () => (
   <View style={[styles.container, { borderColor: colors.accents.chat, borderWidth: 4 }]}>
-    <Text style={styles.text}>RAG Chat</Text>
+    <Text style={styles.text}>RAG Chat (Coming in Phase 7)</Text>
   </View>
 );
 
 export type RootStackParamList = {
+  Auth: undefined;
   Home: undefined;
-  Notebook: { notebookId: string };
-  Note: { noteId: string };
+  Notebook: { notebookId: string; name?: string };
+  Note: { noteId: string; title?: string };
   Chat: { notebookId?: string };
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export const RootNavigator = () => {
+  const session = useAuthStore((state) => state.session);
+
   return (
     <Stack.Navigator 
       screenOptions={{
         headerStyle: { backgroundColor: colors.background },
         headerTintColor: colors.textPrimary,
-        contentStyle: { backgroundColor: colors.background }
+        contentStyle: { backgroundColor: colors.background },
+        headerBackTitleVisible: false,
       }}
     >
-      <Stack.Screen name="Home" component={HomeScreen} />
-      <Stack.Screen name="Notebook" component={NotebookScreen} />
-      <Stack.Screen name="Note" component={NoteScreen} />
-      <Stack.Screen name="Chat" component={ChatScreen} />
+      {session ? (
+        <>
+          <Stack.Screen name="Home" component={HomeScreen} options={{ headerShown: false }} />
+          <Stack.Screen name="Notebook" component={NotebookScreen} />
+          <Stack.Screen name="Note" component={NoteScreen} options={{ title: '' }} />
+          <Stack.Screen name="Chat" component={ChatScreen} />
+        </>
+      ) : (
+        <Stack.Screen name="Auth" component={AuthScreen} options={{ headerShown: false }} />
+      )}
     </Stack.Navigator>
   );
 };
