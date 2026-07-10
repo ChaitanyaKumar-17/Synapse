@@ -5,6 +5,7 @@ import { RootNavigator } from './src/navigation/RootNavigator';
 import { colors } from './src/theme/colors';
 import { supabase } from './src/lib/supabase';
 import { useAuthStore } from './src/store/authStore';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 const NavigationTheme = {
   ...DefaultTheme,
@@ -41,8 +42,10 @@ export default function App() {
   }, [setSession]);
 
   return (
-    <NavigationContainer theme={NavigationTheme}>
-      <RootNavigator />
-    </NavigationContainer>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <NavigationContainer theme={NavigationTheme}>
+        <RootNavigator />
+      </NavigationContainer>
+    </GestureHandlerRootView>
   );
 }

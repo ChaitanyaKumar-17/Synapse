@@ -1,122 +1,365 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, TextInput, KeyboardAvoidingView, Platform, ActivityIndicator, Modal } from 'react-native';
+import React, { useEffect, useState, useMemo } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, KeyboardAvoidingView, Platform, ActivityIndicator, Modal, useWindowDimensions, ScrollView } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation/RootNavigator';
 import { colors } from '../theme/colors';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/authStore';
+import { CustomAlert } from '../components/CustomAlert';
+import { Feather } from '@expo/vector-icons';
+import Sortable from 'react-native-sortables';
+import Animated from 'react-native-reanimated';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Home'>;
 };
 
-type Notebook = {
+type Item = {
   id: string;
   name: string;
+  type: 'notebook' | 'folder' | 'note';
   created_at: string;
+  is_pinned: boolean;
+  pinned_at?: string;
 };
 
+type EmptyItem = {
+  id: string;
+  type: 'empty';
+};
+
+type DisplayItem = Item | EmptyItem;
+
+type Tab = 'Home' | 'Notebooks' | 'To-do';
+
 export const HomeScreen = ({ navigation }: Props) => {
+  const { width } = useWindowDimensions();
+  const contentWidth = width - 32; // 16px padding on each side
+  const halfWidth = (contentWidth - 16) / 2; // 16px gap
+
   const user = useAuthStore(state => state.user);
   const username = user?.user_metadata?.username || user?.email?.split('@')[0] || 'ME';
   
-  const [notebooks, setNotebooks] = useState<Notebook[]>([]);
+  const [activeTab, setActiveTab] = useState<Tab>('Home');
+
+  const [allNotebooks, setAllNotebooks] = useState<any[]>([]);
+  const [allNotes, setAllNotes] = useState<any[]>([]);
+  const [todoNoteIds, setTodoNoteIds] = useState<Set<string>>(new Set());
+
   const [loading, setLoading] = useState(true);
   
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortConfig, setSortConfig] = useState<{field: 'date'|'name', order: 'asc'|'desc'}>({field: 'date', order: 'asc'});
+
   const [isModalVisible, setModalVisible] = useState(false);
   const [newNotebookName, setNewNotebookName] = useState('');
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
+  const [editingType, setEditingType] = useState<'notebook' | 'note' | null>(null);
 
-  const fetchNotebooks = async () => {
-    const { data, error } = await supabase
-      .from('notebooks')
-      .select('id, name, created_at')
-      .is('parent_notebook_id', null)
-      .order('created_at', { ascending: false });
+  const [actionMenu, setActionMenu] = useState<{ visible: boolean, item: Item | null }>({ visible: false, item: null });
 
-    if (error) Alert.alert('Error', error.message);
-    else setNotebooks(data || []);
+  const [dashboardLayout, setDashboardLayout] = useState<string[]>([]);
+  const [layoutLoaded, setLayoutLoaded] = useState(false);
+
+  const [alertConfig, setAlertConfig] = useState({
+    visible: false, title: '', message: '', isDestructive: false, confirmText: 'OK', onConfirm: () => {}
+  });
+
+  const fetchData = async () => {
+    const { data: nbData } = await supabase.from('notebooks').select('id, name, created_at, is_pinned, parent_notebook_id, pinned_at').order('created_at', { ascending: true });
+    const { data: nData } = await supabase.from('notes').select('id, title, created_at, is_pinned, pinned_at').order('created_at', { ascending: true });
+    const { data: tdData } = await supabase.from('note_blocks').select('note_id').eq('block_type', 'checklist');
+    
+    setAllNotebooks(nbData || []);
+    setAllNotes(nData || []);
+    setTodoNoteIds(new Set(tdData?.map(d => d.note_id) || []));
     setLoading(false);
   };
 
   useEffect(() => {
     const unsubscribe = navigation.addListener('focus', () => {
-      fetchNotebooks();
+      fetchData();
     });
     return unsubscribe;
   }, [navigation]);
 
-  const handleCreateNotebook = async () => {
-    if (!newNotebookName.trim()) {
-      setModalVisible(false);
-      return;
-    }
-    const { error } = await supabase.from('notebooks').insert([{ name: newNotebookName.trim(), user_id: user?.id }]);
-    if (error) Alert.alert('Error', error.message);
-    else {
-      setNewNotebookName('');
-      setModalVisible(false);
-      fetchNotebooks();
-    }
-  };
-
-  const handleUpdateNotebook = async (id: string) => {
-    if (!editingName.trim()) {
-      setEditingId(null);
-      return;
-    }
-    const { error } = await supabase.from('notebooks').update({ name: editingName.trim() }).eq('id', id);
-    if (error) Alert.alert('Error', error.message);
-    else {
-      setEditingId(null);
-      fetchNotebooks();
-    }
-  };
-
-  const handleDeleteNotebook = async (id: string, name: string) => {
-    Alert.alert('Delete', `Delete "${name}"?`, [
-      { text: 'Cancel', style: 'cancel' },
-      { 
-        text: 'Delete', 
-        style: 'destructive', 
-        onPress: async () => {
-          const { error } = await supabase.from('notebooks').delete().eq('id', id);
-          if (error) Alert.alert('Error', error.message);
-          else fetchNotebooks();
+  useEffect(() => {
+    if (user?.id) {
+      AsyncStorage.getItem(`dashboard_layout_${user.id}`).then(str => {
+        if (str) {
+          setDashboardLayout(JSON.parse(str));
         }
+        setLayoutLoaded(true);
+      });
+    } else {
+      setLayoutLoaded(true);
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (activeTab === 'Home' && layoutLoaded && user?.id) {
+       const pinnedNotebooks = allNotebooks.filter(nb => nb.is_pinned).map(n => n.id);
+       const pinnedNotes = allNotes.filter(n => n.is_pinned).map(n => n.id);
+       const allPinnedIds = [...pinnedNotebooks, ...pinnedNotes];
+
+       let newLayout = [...dashboardLayout];
+       let changed = false;
+
+       while (newLayout.length > 0 && newLayout[newLayout.length - 1].startsWith('empty-')) {
+         newLayout.pop();
+         changed = true;
+       }
+
+       const beforeLen = newLayout.length;
+       newLayout = newLayout.filter(id => id.startsWith('empty-') || allPinnedIds.includes(id));
+       if (newLayout.length !== beforeLen) changed = true;
+
+       const unplacedIds = allPinnedIds.filter(id => !newLayout.includes(id));
+       if (unplacedIds.length > 0) {
+          const unplacedItems = [...allNotebooks, ...allNotes].filter(i => unplacedIds.includes(i.id));
+          unplacedItems.sort((a, b) => new Date(a.pinned_at || 0).getTime() - new Date(b.pinned_at || 0).getTime());
+          newLayout = [...newLayout, ...unplacedItems.map(i => i.id)];
+          changed = true;
+       }
+
+       if (changed) {
+          setDashboardLayout(newLayout);
+          AsyncStorage.setItem(`dashboard_layout_${user.id}`, JSON.stringify(newLayout));
+       }
+    }
+  }, [activeTab, layoutLoaded, user?.id, allNotebooks, allNotes, dashboardLayout]);
+
+  const displayedItems = useMemo(() => {
+    let items: DisplayItem[] = [];
+    if (!layoutLoaded) return [];
+    
+    if (activeTab === 'Home') {
+      const pinnedNotebooks = allNotebooks.filter(nb => nb.is_pinned).map(n => ({ id: n.id, name: n.name, type: (n.parent_notebook_id ? 'folder' : 'notebook') as const, created_at: n.created_at, is_pinned: n.is_pinned, pinned_at: n.pinned_at }));
+      const pinnedNotes = allNotes.filter(n => n.is_pinned).map(n => ({ id: n.id, name: n.title, type: 'note' as const, created_at: n.created_at, is_pinned: n.is_pinned, pinned_at: n.pinned_at }));
+      const allPinned = [...pinnedNotebooks, ...pinnedNotes];
+
+      let layoutIds = [...dashboardLayout];
+      
+      // Ensure we have enough empty slots for free placement (minimum 12, always at least 4 free)
+      const minSlots = Math.max(12, layoutIds.length + 4);
+      let emptyIdx = 0;
+      while (layoutIds.length < minSlots) {
+         while(layoutIds.includes(`empty-${emptyIdx}`)) emptyIdx++;
+         layoutIds.push(`empty-${emptyIdx}`);
+         emptyIdx++;
       }
-    ]);
+      
+      items = layoutIds.map(id => {
+         if (id.startsWith('empty-')) return { id, type: 'empty' as const };
+         return allPinned.find(p => p.id === id);
+      }).filter(Boolean) as DisplayItem[];
+
+      if (searchQuery.trim()) {
+        items = items.filter(i => i.type === 'empty' || (i as Item).name.toLowerCase().includes(searchQuery.toLowerCase()));
+      }
+    } else if (activeTab === 'Notebooks') {
+      items = allNotebooks.filter(nb => nb.parent_notebook_id === null).map(n => ({ id: n.id, name: n.name, type: 'notebook' as const, created_at: n.created_at, is_pinned: n.is_pinned, pinned_at: n.pinned_at }));
+      if (searchQuery.trim()) items = items.filter(i => i.name.toLowerCase().includes(searchQuery.toLowerCase()));
+    } else if (activeTab === 'To-do') {
+      items = allNotes.filter(n => todoNoteIds.has(n.id)).map(n => ({ id: n.id, name: n.title, type: 'note' as const, created_at: n.created_at, is_pinned: n.is_pinned, pinned_at: n.pinned_at }));
+      if (searchQuery.trim()) items = items.filter(i => i.name.toLowerCase().includes(searchQuery.toLowerCase()));
+    }
+
+    if (activeTab !== 'Home') {
+      items.sort((a, b) => {
+        const itemA = a as Item;
+        const itemB = b as Item;
+        if (sortConfig.field === 'name') {
+           return sortConfig.order === 'asc' ? itemA.name.localeCompare(itemB.name) : itemB.name.localeCompare(itemA.name);
+        } else {
+           return sortConfig.order === 'asc' ? new Date(itemA.created_at).getTime() - new Date(itemB.created_at).getTime() : new Date(itemB.created_at).getTime() - new Date(itemA.created_at).getTime();
+        }
+      });
+    }
+
+    return items;
+  }, [activeTab, allNotebooks, allNotes, todoNoteIds, searchQuery, sortConfig, user?.id, dashboardLayout, layoutLoaded]);
+
+  const groupedData = useMemo(() => {
+    const groups = [];
+    let i = 0;
+    while (i < displayedItems.length) {
+      if (displayedItems[i].type === 'empty') {
+        i += 1;
+        continue;
+      }
+      const type = displayedItems[i].type;
+      if (type === 'notebook' || type === 'folder') {
+        const pair = [{ item: displayedItems[i] as Item, index: i }];
+        if (i + 1 < displayedItems.length && (displayedItems[i+1].type === 'notebook' || displayedItems[i+1].type === 'folder')) {
+          pair.push({ item: displayedItems[i+1] as Item, index: i+1 });
+          i += 2;
+        } else {
+          i += 1;
+        }
+        groups.push({ type: 'row', items: pair });
+      } else {
+        groups.push({ type: 'single', items: [{ item: displayedItems[i] as Item, index: i }] });
+        i += 1;
+      }
+    }
+    return groups;
+  }, [displayedItems]);
+
+  const handleCreateNotebook = async () => {
+    if (!newNotebookName.trim()) { setModalVisible(false); return; }
+    const { error } = await supabase.from('notebooks').insert([{ name: newNotebookName.trim(), user_id: user?.id }]);
+    if (error) setAlertConfig({ visible: true, title: 'Error', message: error.message, isDestructive: false, confirmText: 'OK', onConfirm: () => {} });
+    else { setNewNotebookName(''); setModalVisible(false); fetchData(); }
   };
 
-  // Group items into pairs or singles to simulate the masonry widget layout
-  // Pattern: 2 half-width, 1 full-width, 2 half-width, 1 full-width
-  const groupedData = [];
-  let i = 0;
-  while (i < notebooks.length) {
-    if (groupedData.length % 2 === 0) {
-      // push a pair
-      const pair = [notebooks[i]];
-      if (i + 1 < notebooks.length) pair.push(notebooks[i+1]);
-      groupedData.push({ type: 'pair', items: pair });
-      i += 2;
-    } else {
-      // push a single full width
-      groupedData.push({ type: 'single', items: [notebooks[i]] });
-      i += 1;
+  const handleUpdateItem = async (id: string, type: 'notebook'|'note') => {
+    if (!editingName.trim()) { setEditingId(null); return; }
+    const table = type === 'notebook' ? 'notebooks' : 'notes';
+    const field = type === 'notebook' ? 'name' : 'title';
+    const { error } = await supabase.from(table).update({ [field]: editingName.trim() }).eq('id', id);
+    if (error) setAlertConfig({ visible: true, title: 'Error', message: error.message, isDestructive: false, confirmText: 'OK', onConfirm: () => {} });
+    else { setEditingId(null); fetchData(); }
+  };
+
+  const handleDeleteItem = async (id: string, name: string, type: 'notebook'|'note') => {
+    setAlertConfig({
+      visible: true,
+      title: `Delete ${type === 'notebook' ? 'Notebook' : 'Note'}`,
+      message: `Are you sure you want to delete "${name}"?`,
+      isDestructive: true,
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        const table = type === 'notebook' ? 'notebooks' : 'notes';
+        const { error } = await supabase.from(table).delete().eq('id', id);
+        if (error) {
+          setTimeout(() => setAlertConfig({ visible: true, title: 'Error', message: error.message, isDestructive: false, confirmText: 'OK', onConfirm: () => {} }), 500);
+        } else fetchData();
+      }
+    });
+  };
+
+  const handleTogglePin = async (item: Item) => {
+    const table = item.type === 'note' ? 'notes' : 'notebooks';
+    const newPinned = !item.is_pinned;
+    const pinned_at = newPinned ? new Date().toISOString() : null;
+    const { error } = await supabase.from(table).update({ is_pinned: newPinned, pinned_at }).eq('id', item.id);
+    if (error) setAlertConfig({ visible: true, title: 'Error', message: error.message, isDestructive: false, confirmText: 'OK', onConfirm: () => {} });
+    else fetchData();
+  };
+
+  const handleSaveReorder = async (newData: DisplayItem[]) => {
+    if (user?.id) {
+      const layoutIds = newData.map(item => item.id);
+      while (layoutIds.length > 0 && layoutIds[layoutIds.length - 1].startsWith('empty-')) {
+        layoutIds.pop();
+      }
+      setDashboardLayout(layoutIds);
+      await AsyncStorage.setItem(`dashboard_layout_${user.id}`, JSON.stringify(layoutIds));
     }
-  }
+    
+    // We no longer need to update pinned_at just for ordering on Home, 
+    // because AsyncStorage dashboard_layout is now the absolute truth for Home layout.
+  };
+
+  const renderCardContent = (item: DisplayItem, index: number) => {
+    if (item.type === 'empty') {
+      return <View key={item.id} style={{ width: halfWidth, height: halfWidth, backgroundColor: 'transparent' }} />;
+    }
+
+    const cardColor = colors.cardColors[index % colors.cardColors.length];
+    
+    if (editingId === item.id) {
+      if (item.type === 'folder') {
+        return (
+          <View key={item.id} style={[styles.folderSquareItem, { width: halfWidth, height: halfWidth }]}>
+            <Text style={styles.folderSquareIcon}>📁</Text>
+            <View style={styles.editContainer}>
+              <TextInput
+                style={styles.folderEditInput}
+                value={editingName}
+                onChangeText={setEditingName}
+                autoFocus
+                onSubmitEditing={() => handleUpdateItem(item.id, item.type === 'note' ? 'note' : 'notebook')}
+              />
+            </View>
+          </View>
+        );
+      } else {
+        const isHalf = item.type === 'notebook';
+        return (
+          <View key={item.id} style={[styles.card, { backgroundColor: cardColor, width: isHalf ? halfWidth : contentWidth, height: isHalf ? halfWidth : 140 }]}>
+            <View style={styles.editContainer}>
+              <TextInput
+                style={styles.editInput}
+                value={editingName}
+                onChangeText={setEditingName}
+                autoFocus
+                onSubmitEditing={() => handleUpdateItem(item.id, item.type === 'note' ? 'note' : 'notebook')}
+              />
+            </View>
+          </View>
+        );
+      }
+    }
+
+    if (item.type === 'folder') {
+      return (
+        <TouchableOpacity 
+          key={item.id}
+          style={[styles.folderSquareItem, { width: halfWidth, height: halfWidth }]}
+          activeOpacity={0.7}
+          onPress={() => navigation.navigate('Notebook', { notebookId: item.id, name: item.name })}
+          onLongPress={() => setActionMenu({ visible: true, item })}
+        >
+          <Text style={styles.folderSquareIcon}>📁</Text>
+          <Text style={styles.folderSquareTitle} numberOfLines={2}>{item.name}</Text>
+          {item.is_pinned && <Feather name="anchor" size={14} color="rgba(255,255,255,0.5)" style={{ marginTop: 4 }} />}
+        </TouchableOpacity>
+      );
+    }
+
+    const isHalf = item.type === 'notebook';
+    return (
+      <TouchableOpacity 
+        key={item.id}
+        style={[styles.card, { backgroundColor: cardColor, width: isHalf ? halfWidth : contentWidth, height: isHalf ? halfWidth : 140 }]}
+        activeOpacity={0.9}
+        onPress={() => {
+          if (item.type === 'notebook') navigation.navigate('Notebook', { notebookId: item.id, name: item.name });
+          else navigation.navigate('Note', { noteId: item.id, title: item.name });
+        }}
+        onLongPress={() => setActionMenu({ visible: true, item })}
+      >
+        <View style={styles.cardContent}>
+          <View style={{ flex: 1, flexDirection: item.type === 'note' ? 'row' : 'column', alignItems: item.type === 'note' ? 'center' : 'flex-start' }}>
+            {item.type === 'note' && <View style={[styles.iconWrapper, { marginBottom: 0, marginRight: 16 }]}><Text style={styles.icon}>✏️</Text></View>}
+            <Text style={[styles.cardTitle, { flex: 1 }]} numberOfLines={item.type === 'note' ? 1 : 2}>{item.name}</Text>
+          </View>
+          <View style={styles.cardBottomRow}>
+            <Text style={styles.cardDate}>{new Date(item.created_at).toLocaleDateString()} {item.type === 'note' && '• NOTE'}</Text>
+            {item.is_pinned && <Feather name="anchor" size={14} color="rgba(0,0,0,0.5)" />}
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <View style={styles.container}>
-      
-      {/* Header matching Ref 1 */}
       <View style={styles.header}>
         <View style={styles.headerTop}>
           <Text style={styles.title}>My{'\n'}Notes</Text>
           <TouchableOpacity 
-            onPress={() => supabase.auth.signOut()} 
+            onPress={() => {
+              setAlertConfig({
+                visible: true, title: 'Sign Out', message: 'Are you sure you want to sign out?', isDestructive: true, confirmText: 'Sign Out',
+                onConfirm: () => supabase.auth.signOut()
+              });
+            }} 
             style={styles.profileBtn}
             activeOpacity={0.7}
           >
@@ -125,137 +368,112 @@ export const HomeScreen = ({ navigation }: Props) => {
         </View>
 
         <View style={styles.pillsContainer}>
-          <TouchableOpacity style={[styles.pill, styles.pillActive]}>
-            <Text style={styles.pillTextActive}>All <Text style={styles.pillBadge}>{notebooks.length}</Text></Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.pill}><Text style={styles.pillText}>Important</Text></TouchableOpacity>
-          <TouchableOpacity style={styles.pill}><Text style={styles.pillText}>To-do</Text></TouchableOpacity>
+          {(['Home', 'Notebooks', 'To-do'] as Tab[]).map(tab => (
+            <TouchableOpacity 
+              key={tab} 
+              style={[styles.pill, activeTab === tab && styles.pillActive]}
+              onPress={() => setActiveTab(tab)}
+            >
+              <Text style={activeTab === tab ? styles.pillTextActive : styles.pillText}>{tab}</Text>
+            </TouchableOpacity>
+          ))}
         </View>
+
+        {activeTab === 'Notebooks' && (
+          <View style={styles.searchRow}>
+            <View style={styles.searchBar}>
+              <Feather name="search" size={20} color={colors.textSecondary} />
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search notebooks..."
+                placeholderTextColor={colors.textDisabled}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+              />
+            </View>
+            <TouchableOpacity 
+              style={styles.sortBtn}
+              onPress={() => setSortConfig(prev => ({
+                field: prev.field === 'date' ? 'name' : 'date',
+                order: prev.field === 'date' ? 'asc' : (prev.order === 'asc' ? 'desc' : 'asc')
+              }))}
+            >
+              <Text style={styles.sortBtnText}>Sort by: <Text style={{ color: colors.textPrimary }}>{sortConfig.field === 'date' ? 'Date' : 'Name'}</Text></Text>
+              <Feather name={sortConfig.order === 'asc' ? 'arrow-up' : 'arrow-down'} size={16} color={colors.textPrimary} style={{ marginLeft: 8 }} />
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
 
-      {/* Widget Grid */}
       {loading ? (
         <ActivityIndicator size="large" color={colors.textPrimary} style={{ marginTop: 40 }} />
+      ) : (activeTab === 'Home' && displayedItems.filter(i => i.type !== 'empty').length === 0) ? (
+        <View style={styles.emptyContainer}>
+           <Text style={styles.emptyText}>
+             Nothing pinned yet. Long press a notebook or note to pin it here.
+           </Text>
+        </View>
+      ) : displayedItems.length === 0 ? (
+        <View style={styles.emptyContainer}>
+           <Text style={styles.emptyText}>
+             {activeTab === 'To-do' ? "No to-dos found. Add a checklist block to a note." : "No items found."}
+           </Text>
+        </View>
+      ) : activeTab === 'Home' ? (
+        <Animated.ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 100 }} showsVerticalScrollIndicator={false}>
+          <Sortable.Flex
+            flexDirection="row"
+            flexWrap="wrap"
+            justifyContent="space-between"
+            paddingHorizontal={16}
+            rowGap={16}
+            onDragEnd={({ order }) => handleSaveReorder(order(displayedItems))}
+          >
+            {displayedItems.map((item, index) => renderCardContent(item, index))}
+          </Sortable.Flex>
+        </Animated.ScrollView>
       ) : (
-        <FlatList
-          data={groupedData}
-          keyExtractor={(_, index) => `row-${index}`}
+        <ScrollView
+          style={{ flex: 1 }}
+          showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.listContainer}
-          renderItem={({ item, index }) => {
-            if (item.type === 'pair') {
+        >
+          {groupedData.map((item, index) => {
+            if (item.type === 'row') {
               return (
-                <View style={styles.rowWrapper}>
-                  {item.items.map((notebook, idx) => {
-                    // Stable color index based on actual position
-                    let absoluteIndex = 0;
-                    for(let r=0; r<index; r++) absoluteIndex += groupedData[r].items.length;
-                    absoluteIndex += idx;
-                    
-                    const cardColor = colors.cardColors[absoluteIndex % colors.cardColors.length];
-                    
-                    return (
-                      <TouchableOpacity 
-                        key={notebook.id}
-                        style={[styles.card, styles.cardHalf, { backgroundColor: cardColor }]}
-                        activeOpacity={0.9}
-                        onPress={() => {
-                          if (editingId !== notebook.id) {
-                            navigation.navigate('Notebook', { notebookId: notebook.id, name: notebook.name });
-                          }
-                        }}
-                        onLongPress={() => {
-                          setEditingId(notebook.id);
-                          setEditingName(notebook.name);
-                        }}
-                      >
-                        {editingId === notebook.id ? (
-                          <View style={styles.editContainer}>
-                            <TextInput
-                              style={styles.editInput}
-                              value={editingName}
-                              onChangeText={setEditingName}
-                              autoFocus
-                              onBlur={() => setEditingId(null)}
-                              onSubmitEditing={() => handleUpdateNotebook(notebook.id)}
-                            />
-                          </View>
-                        ) : (
-                          <View style={styles.cardContent}>
-                            <Text style={styles.cardTitle}>{notebook.name}</Text>
-                            <View style={styles.cardBottomRow}>
-                              <Text style={styles.cardDate}>{new Date(notebook.created_at).toLocaleDateString()}</Text>
-                              <TouchableOpacity onPress={() => handleDeleteNotebook(notebook.id, notebook.name)} style={styles.deleteIcon}>
-                                <Text style={styles.deleteIconText}>✕</Text>
-                              </TouchableOpacity>
-                            </View>
-                          </View>
-                        )}
-                      </TouchableOpacity>
-                    );
-                  })}
-                  {item.items.length === 1 && <View style={styles.cardHalf} />}
+                <View key={`row-${index}`} style={styles.rowWrapper}>
+                  {item.items.map((col: any) => (
+                    <React.Fragment key={col.item.id}>
+                      {renderCardContent(col.item, col.index)}
+                    </React.Fragment>
+                  ))}
+                  {item.items.length === 1 && <View style={styles.folderSquareItemPlaceholder} />}
                 </View>
               );
             } else {
-              // Single full width
-              const notebook = item.items[0];
-              let absoluteIndex = 0;
-              for(let r=0; r<index; r++) absoluteIndex += groupedData[r].items.length;
-              const cardColor = colors.cardColors[absoluteIndex % colors.cardColors.length];
-
+              const col = item.items[0];
               return (
-                <TouchableOpacity 
-                  style={[styles.card, styles.cardFull, { backgroundColor: cardColor }]}
-                  activeOpacity={0.9}
-                  onPress={() => {
-                    if (editingId !== notebook.id) {
-                      navigation.navigate('Notebook', { notebookId: notebook.id, name: notebook.name });
-                    }
-                  }}
-                  onLongPress={() => {
-                    setEditingId(notebook.id);
-                    setEditingName(notebook.name);
-                  }}
-                >
-                  {editingId === notebook.id ? (
-                    <View style={styles.editContainer}>
-                      <TextInput
-                        style={[styles.editInput, { textAlign: 'center' }]}
-                        value={editingName}
-                        onChangeText={setEditingName}
-                        autoFocus
-                        onBlur={() => setEditingId(null)}
-                        onSubmitEditing={() => handleUpdateNotebook(notebook.id)}
-                      />
-                    </View>
-                  ) : (
-                    <View style={[styles.cardContent, { flexDirection: 'row', alignItems: 'center' }]}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.cardDateFull}>{new Date(notebook.created_at).toLocaleDateString()}</Text>
-                        <Text style={styles.cardTitleFull}>{notebook.name}</Text>
-                      </View>
-                      <TouchableOpacity onPress={() => handleDeleteNotebook(notebook.id, notebook.name)} style={styles.deleteIcon}>
-                        <Text style={styles.deleteIconText}>✕</Text>
-                      </TouchableOpacity>
-                    </View>
-                  )}
-                </TouchableOpacity>
-              )
+                <React.Fragment key={`single-${index}`}>
+                  {renderCardContent(col.item, col.index)}
+                </React.Fragment>
+              );
             }
-          }}
-        />
+          })}
+        </ScrollView>
       )}
 
       {/* Floating Action Button */}
-      <TouchableOpacity style={styles.fab} onPress={() => setModalVisible(true)} activeOpacity={0.8}>
-        <Text style={styles.fabText}>+</Text>
-      </TouchableOpacity>
+      {activeTab !== 'To-do' && (
+        <TouchableOpacity style={styles.fab} onPress={() => setModalVisible(true)} activeOpacity={0.8}>
+          <Text style={styles.fabText}>+</Text>
+        </TouchableOpacity>
+      )}
 
       {/* Creation Modal */}
       <Modal visible={isModalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView style={styles.modalContainer} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-            <Text style={styles.modalTitle}>New Widget</Text>
+            <Text style={styles.modalTitle}>New Notebook</Text>
             <TextInput
               style={styles.modalInput}
               autoFocus
@@ -276,6 +494,52 @@ export const HomeScreen = ({ navigation }: Props) => {
           </KeyboardAvoidingView>
         </View>
       </Modal>
+
+      {/* Action Menu (Context Menu) */}
+      <Modal visible={actionMenu.visible} transparent animationType="fade" onRequestClose={() => setActionMenu({ visible: false, item: null })}>
+        <TouchableOpacity style={styles.actionMenuOverlay} activeOpacity={1} onPress={() => setActionMenu({ visible: false, item: null })}>
+          <View style={styles.actionMenuBox}>
+            <Text style={styles.actionMenuTitle} numberOfLines={1}>{actionMenu.item?.name}</Text>
+            
+            <TouchableOpacity style={styles.actionMenuItem} onPress={() => {
+              const item = actionMenu.item;
+              setActionMenu({ visible: false, item: null });
+              if (item) {
+                setTimeout(() => {
+                  setEditingId(item.id);
+                  setEditingName(item.name);
+                  setEditingType(item.type);
+                }, 350);
+              }
+            }}>
+              <Feather name="edit-2" size={20} color={colors.textPrimary} style={styles.actionMenuIcon} />
+              <Text style={styles.actionMenuItemText}>Rename</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity style={styles.actionMenuItem} onPress={() => {
+              if (actionMenu.item) handleTogglePin(actionMenu.item);
+              setActionMenu({ visible: false, item: null });
+            }}>
+              <Feather name="anchor" size={20} color={colors.textPrimary} style={styles.actionMenuIcon} />
+              <Text style={styles.actionMenuItemText}>{actionMenu.item?.is_pinned ? 'Unpin from Home' : 'Pin to Home'}</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.actionMenuItem} onPress={() => {
+              const item = actionMenu.item;
+              setActionMenu({ visible: false, item: null });
+              if (item) handleDeleteItem(item.id, item.name, item.type);
+            }}>
+              <Feather name="trash-2" size={20} color={colors.actions.signOut} style={styles.actionMenuIcon} />
+              <Text style={[styles.actionMenuItemText, { color: colors.actions.signOut }]}>Delete</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      <CustomAlert  
+        {...alertConfig} 
+        onCancel={() => setAlertConfig(prev => ({ ...prev, visible: false }))} 
+      />
     </View>
   );
 };
@@ -301,16 +565,18 @@ const styles = StyleSheet.create({
     letterSpacing: -1,
   },
   profileBtn: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     backgroundColor: colors.surfaceLight,
     justifyContent: 'center',
     alignItems: 'center',
+    marginRight: 16,
+    marginTop: 8,
   },
   profileInitials: {
     color: colors.textPrimary,
-    fontSize: 16,
+    fontSize: 22,
     fontWeight: 'bold',
   },
   
@@ -331,35 +597,63 @@ const styles = StyleSheet.create({
   pillTextActive: { color: colors.textPrimary, fontWeight: 'bold' },
   pillBadge: { color: colors.textSecondary, fontWeight: 'normal' },
 
+  searchRow: { flexDirection: 'row', alignItems: 'center', marginTop: 24 },
+  searchBar: {
+    flex: 1, flexDirection: 'row', alignItems: 'center',
+    backgroundColor: colors.surface, paddingHorizontal: 16, paddingVertical: 12,
+    borderRadius: 16, marginRight: 12,
+  },
+  searchInput: { flex: 1, color: colors.textPrimary, fontSize: 16, marginLeft: 12 },
+  sortBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, paddingHorizontal: 16, paddingVertical: 14, borderRadius: 16 },
+  sortBtnText: { color: colors.textSecondary, fontSize: 14, fontWeight: '600' },
+
+  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
+  emptyText: { color: colors.textSecondary, fontSize: 18, textAlign: 'center', lineHeight: 28 },
+
   listContainer: { paddingHorizontal: 16, paddingBottom: 100 },
   
   rowWrapper: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16 },
-  
+
+  folderSquareItem: { width: '48%', aspectRatio: 1, backgroundColor: 'transparent', justifyContent: 'center', alignItems: 'center' },
+  folderSquareIcon: { fontSize: 64, marginBottom: 12 },
+  folderSquareTitle: { fontSize: 18, fontWeight: '700', color: colors.textPrimary, textAlign: 'center' },
+  folderEditInput: { 
+    width: '80%',
+    alignSelf: 'center',
+    fontSize: 18, 
+    fontWeight: '700', 
+    color: colors.textPrimary, 
+    textAlign: 'center', 
+    borderBottomWidth: 1, 
+    borderColor: colors.textSecondary,
+    // @ts-ignore
+    outlineStyle: 'none',
+  },
+  folderSquareItemPlaceholder: { width: '48%' },
+
   card: {
     borderRadius: 32,
     padding: 24,
+    marginBottom: 16,
     overflow: 'hidden',
-  },
-  cardHalf: {
-    width: '48%',
-    aspectRatio: 0.85,
   },
   cardFull: {
     width: '100%',
-    height: 120,
-    marginBottom: 16,
-    borderRadius: 40, // More pill-shaped for full width
+    height: 140,
   },
-
+  cardHalf: {
+    width: '48%',
+    aspectRatio: 1,
+  },
   cardContent: {
     flex: 1,
     justifyContent: 'space-between',
   },
   cardTitle: {
-    fontSize: 24,
+    fontSize: 28,
     fontWeight: '800',
     color: '#111111',
-    lineHeight: 28,
+    lineHeight: 32,
   },
   cardBottomRow: {
     flexDirection: 'row',
@@ -367,28 +661,10 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
   },
   cardDate: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: 'rgba(0,0,0,0.5)',
-  },
-  cardTitleFull: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#111111',
-  },
-  cardDateFull: {
     fontSize: 14,
     fontWeight: '600',
     color: 'rgba(0,0,0,0.5)',
-    marginBottom: 4,
   },
-
-  deleteIcon: {
-    width: 28, height: 28, borderRadius: 14,
-    backgroundColor: 'rgba(0,0,0,0.1)',
-    justifyContent: 'center', alignItems: 'center',
-  },
-  deleteIconText: { color: '#000', fontSize: 12, fontWeight: 'bold' },
 
   editContainer: { flex: 1, justifyContent: 'center' },
   editInput: {
@@ -397,7 +673,19 @@ const styles = StyleSheet.create({
     color: '#000',
     borderBottomWidth: 2,
     borderColor: 'rgba(0,0,0,0.3)',
+    // @ts-ignore
+    outlineStyle: 'none',
   },
+  iconWrapper: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  icon: { fontSize: 16 },
 
   fab: {
     position: 'absolute',
@@ -417,18 +705,19 @@ const styles = StyleSheet.create({
   },
   fabText: { fontSize: 32, color: colors.background, fontWeight: '300', marginTop: -4 },
 
-  modalOverlay: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', padding: 24,
-  },
-  modalContainer: {
-    backgroundColor: colors.surface, padding: 24, borderRadius: 32,
-  },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', padding: 24 },
+  modalContainer: { backgroundColor: colors.surface, padding: 24, borderRadius: 32 },
   modalTitle: { fontSize: 24, fontWeight: 'bold', color: colors.textPrimary, marginBottom: 20 },
-  modalInput: {
-    backgroundColor: colors.background, color: colors.textPrimary, borderRadius: 16, padding: 20, fontSize: 18, marginBottom: 24,
-  },
+  modalInput: { backgroundColor: colors.background, color: colors.textPrimary, borderRadius: 16, padding: 20, fontSize: 18, marginBottom: 24 },
   modalActions: { flexDirection: 'row', justifyContent: 'flex-end' },
   modalBtn: { paddingHorizontal: 24, paddingVertical: 14, borderRadius: 16, marginLeft: 12 },
   modalBtnText: { color: colors.textSecondary, fontWeight: 'bold', fontSize: 16 },
   modalBtnTextPrimary: { color: colors.background, fontWeight: 'bold', fontSize: 16 },
+
+  actionMenuOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 24 },
+  actionMenuBox: { backgroundColor: colors.surface, borderRadius: 24, padding: 16, width: '100%', maxWidth: 300 },
+  actionMenuTitle: { fontSize: 18, fontWeight: 'bold', color: colors.textSecondary, marginBottom: 16, paddingHorizontal: 16, paddingTop: 8 },
+  actionMenuItem: { flexDirection: 'row', alignItems: 'center', padding: 16 },
+  actionMenuIcon: { marginRight: 16 },
+  actionMenuItemText: { fontSize: 18, fontWeight: '600', color: colors.textPrimary },
 });

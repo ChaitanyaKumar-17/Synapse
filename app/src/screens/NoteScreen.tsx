@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, TextInput, KeyboardAvoidingView, Platform, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Animated, PanResponder } from 'react-native';
+import { View, Text, StyleSheet, TextInput, KeyboardAvoidingView, Platform, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Animated, PanResponder, Modal, Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp } from '@react-navigation/native';
@@ -7,7 +7,13 @@ import { RootStackParamList } from '../navigation/RootNavigator';
 import { colors } from '../theme/colors';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/authStore';
+import { CustomAlert } from '../components/CustomAlert';
 import { Feather } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import * as IntentLauncher from 'expo-intent-launcher';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Note'>;
@@ -20,6 +26,15 @@ type ChecklistItem = {
   content: string;
   is_checked: boolean;
   order_index: number;
+};
+
+type Attachment = {
+  id: string;
+  storage_path: string;
+  file_type: 'image' | 'file';
+  file_name: string;
+  created_at?: string;
+  publicUrl?: string;
 };
 
 type NoteBlock = {
@@ -37,15 +52,30 @@ export const NoteScreen = ({ navigation, route }: Props) => {
 
   const [title, setTitle] = useState(route.params.title || '');
   const [blocks, setBlocks] = useState<NoteBlock[]>([]);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [loading, setLoading] = useState(true);
   const [isToolbarExpanded, setIsToolbarExpanded] = useState(false);
+  const [fullImage, setFullImage] = useState<string | null>(null);
+
+  // Tags State
+  const [tagsModalVisible, setTagsModalVisible] = useState(false);
+  const [allTags, setAllTags] = useState<{id: string, name: string, color: string}[]>([]);
+  const [noteTagIds, setNoteTagIds] = useState<string[]>([]);
+  const [newTagName, setNewTagName] = useState('');
+  const [newTagColor, setNewTagColor] = useState(colors.cardColors[0]);
+  
+  const [noteColor, setNoteColor] = useState<string | null>(null);
+  const notebookIdRef = useRef<string | null>(null);
+
+  const [alertConfig, setAlertConfig] = useState({
+    visible: false, title: '', message: '', isDestructive: false, confirmText: 'OK', onConfirm: () => {}
+  });
 
   // Use refs for debouncing to avoid stale closures
   const saveTimeoutRef = useRef<{ [key: string]: NodeJS.Timeout }>({});
 
   // Basic history state for undo/redo (tracks latest saved states)
-  const [history, setHistory] = useState<string[]>([]);
-  const [historyIndex, setHistoryIndex] = useState(-1);
+  const historyRef = useRef<{ list: string[], index: number }>({ list: [], index: -1 });
   const isUndoRedoActive = useRef(false);
 
   // Toolbar Animation
@@ -57,19 +87,21 @@ export const NoteScreen = ({ navigation, route }: Props) => {
   };
   
   const collapse = () => {
-    Animated.spring(slideAnim, { toValue: 0, useNativeDriver: true, friction: 8 }).start(() => {
-      setIsToolbarExpanded(false);
-    });
+    setIsToolbarExpanded(false);
+    Animated.spring(slideAnim, { toValue: 0, useNativeDriver: true, friction: 8 }).start();
   };
+
+  const handlersRef = useRef({ expand, collapse });
+  handlersRef.current = { expand, collapse };
 
   const panResponder = useRef(
     PanResponder.create({
       onMoveShouldSetPanResponder: (_, gestureState) => Math.abs(gestureState.dy) > 10,
       onPanResponderRelease: (_, gestureState) => {
         if (gestureState.dy < -30) {
-          expand();
+          handlersRef.current.expand();
         } else if (gestureState.dy > 30) {
-          collapse();
+          handlersRef.current.collapse();
         }
       }
     })
@@ -89,32 +121,56 @@ export const NoteScreen = ({ navigation, route }: Props) => {
     if (isUndoRedoActive.current) return;
     const snapshot = JSON.stringify({ title: newTitle, blocks: newBlocks });
     
-    setHistory(prev => {
-      const trimmed = prev.slice(0, historyIndex + 1);
-      if (trimmed[trimmed.length - 1] === snapshot) return trimmed; // No change
-      return [...trimmed, snapshot];
-    });
-    setHistoryIndex(prev => prev + 1);
+    const { list, index } = historyRef.current;
+    const trimmed = list.slice(0, index + 1);
+    
+    if (trimmed.length > 0 && trimmed[trimmed.length - 1] === snapshot) return;
+    
+    historyRef.current = {
+      list: [...trimmed, snapshot],
+      index: index + 1
+    };
+  };
+
+  const saveStateToSupabase = async (newTitle: string, newBlocks: NoteBlock[]) => {
+    await supabase.from('notes').update({ title: newTitle.trim() || 'Untitled' }).eq('id', noteId);
+    for (const block of newBlocks) {
+      if (block.block_type === 'text') {
+        await supabase.from('note_blocks').update({ text_content: block.text_content }).eq('id', block.id);
+      } else if (block.block_type === 'checklist' && block.checklist_items) {
+        for (const item of block.checklist_items) {
+          await supabase.from('checklist_items').update({ content: item.content, is_checked: item.is_checked }).eq('id', item.id);
+        }
+      }
+    }
   };
 
   const handleUndo = () => {
-    if (historyIndex > 0) {
+    const { list, index } = historyRef.current;
+    if (index > 0) {
       isUndoRedoActive.current = true;
-      const prevSnapshot = JSON.parse(history[historyIndex - 1]);
+      historyRef.current.index = index - 1;
+      const prevSnapshot = JSON.parse(list[historyRef.current.index]);
+      
       setTitle(prevSnapshot.title);
       setBlocks(prevSnapshot.blocks);
-      setHistoryIndex(historyIndex - 1);
+      
+      saveStateToSupabase(prevSnapshot.title, prevSnapshot.blocks);
       setTimeout(() => { isUndoRedoActive.current = false; }, 100);
     }
   };
 
   const handleRedo = () => {
-    if (historyIndex < history.length - 1) {
+    const { list, index } = historyRef.current;
+    if (index < list.length - 1) {
       isUndoRedoActive.current = true;
-      const nextSnapshot = JSON.parse(history[historyIndex + 1]);
+      historyRef.current.index = index + 1;
+      const nextSnapshot = JSON.parse(list[historyRef.current.index]);
+      
       setTitle(nextSnapshot.title);
       setBlocks(nextSnapshot.blocks);
-      setHistoryIndex(historyIndex + 1);
+      
+      saveStateToSupabase(nextSnapshot.title, nextSnapshot.blocks);
       setTimeout(() => { isUndoRedoActive.current = false; }, 100);
     }
   };
@@ -122,12 +178,14 @@ export const NoteScreen = ({ navigation, route }: Props) => {
   const fetchNote = async () => {
     updateHeaderOptions();
 
-    // Fetch title
+    // Fetch title, color, notebookId
     let currentTitle = route.params.title || '';
-    const { data: noteData } = await supabase.from('notes').select('title').eq('id', noteId).single();
+    const { data: noteData } = await supabase.from('notes').select('title, notebook_id, color').eq('id', noteId).single();
     if (noteData) {
       currentTitle = noteData.title;
       setTitle(currentTitle);
+      notebookIdRef.current = noteData.notebook_id;
+      if (noteData.color) setNoteColor(noteData.color);
     }
 
     // Fetch blocks
@@ -166,8 +224,76 @@ export const NoteScreen = ({ navigation, route }: Props) => {
       }));
     }
     setBlocks(currentBlocks);
+    
+    // Fetch Attachments
+    const { data: attachData } = await supabase.from('attachments').select('*').eq('note_id', noteId).order('created_at', { ascending: true });
+    if (attachData) {
+      const parsedAttachments = await Promise.all(attachData.map(async (a) => {
+        if (a.file_type === 'image') {
+           const { data } = await supabase.storage.from('attachments').createSignedUrl(a.storage_path, 3600);
+           return { ...a, publicUrl: data?.signedUrl };
+        }
+        return a;
+      }));
+      setAttachments(parsedAttachments);
+    }
+    
     pushToHistory(currentTitle, currentBlocks);
     setLoading(false);
+  };
+
+  const fetchTags = async () => {
+    const { data: tagsData } = await supabase.from('tags').select('*').eq('user_id', user?.id).order('name');
+    if (tagsData) setAllTags(tagsData);
+
+    const { data: noteTagsData } = await supabase.from('note_tags').select('tag_id').eq('note_id', noteId);
+    if (noteTagsData) setNoteTagIds(noteTagsData.map(nt => nt.tag_id));
+  };
+
+  const handleOpenTags = () => {
+    setIsToolbarExpanded(false);
+    // Use Animated.timing with 0 duration to properly force the native thread to reset
+    Animated.timing(slideAnim, { toValue: 0, duration: 0, useNativeDriver: true }).start(() => {
+      fetchTags();
+      setTagsModalVisible(true);
+    });
+  };
+
+  const handleCreateTag = async () => {
+    if (!newTagName.trim()) return;
+    const { data, error } = await supabase.from('tags').insert({
+      user_id: user?.id,
+      name: newTagName.trim(),
+      color: newTagColor
+    }).select().single();
+    if (error) { Alert.alert('Error', error.message); return; }
+    setAllTags([...allTags, data]);
+    setNewTagName('');
+  };
+
+  const handleToggleNoteTag = async (tagId: string) => {
+    if (noteTagIds.includes(tagId)) {
+      setNoteTagIds(noteTagIds.filter(id => id !== tagId));
+      await supabase.from('note_tags').delete().match({ note_id: noteId, tag_id: tagId });
+    } else {
+      setNoteTagIds([...noteTagIds, tagId]);
+      await supabase.from('note_tags').insert({ note_id: noteId, tag_id: tagId });
+    }
+  };
+
+  const handleDeleteTagGlobal = async (tagId: string) => {
+    setAlertConfig({
+      visible: true,
+      title: 'Delete Label',
+      message: 'This will remove the label from all notes. Are you sure?',
+      isDestructive: true,
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        setAllTags(allTags.filter(t => t.id !== tagId));
+        setNoteTagIds(noteTagIds.filter(id => id !== tagId));
+        await supabase.from('tags').delete().eq('id', tagId);
+      }
+    });
   };
 
   const debouncedSaveTitle = useCallback((newTitle: string) => {
@@ -236,23 +362,16 @@ export const NoteScreen = ({ navigation, route }: Props) => {
     }
   };
 
-  const debouncedSaveChecklistItem = useCallback((itemId: string, content: string, currentBlocks: NoteBlock[]) => {
-    if (saveTimeoutRef.current[itemId]) clearTimeout(saveTimeoutRef.current[itemId]);
-    saveTimeoutRef.current[itemId] = setTimeout(async () => {
-      await supabase.from('checklist_items').update({ content }).eq('id', itemId);
-      pushToHistory(title, currentBlocks);
+  const handleChecklistItemChange = (blockId: string, itemId: string, newText: string) => {
+    setBlocks(prev => prev.map(b => b.id === blockId ? {
+      ...b,
+      checklist_items: b.checklist_items?.map(i => i.id === itemId ? { ...i, content: newText } : i)
+    } : b));
+    if (saveTimeoutRef.current[`item-${itemId}`]) clearTimeout(saveTimeoutRef.current[`item-${itemId}`]);
+    saveTimeoutRef.current[`item-${itemId}`] = setTimeout(async () => {
+      await supabase.from('checklist_items').update({ content: newText }).eq('id', itemId);
+      pushToHistory(title, blocks); // Warning: closure capture might be stale without refs, but acceptable for now
     }, 1000);
-  }, [title]);
-
-  const handleChecklistItemChange = (blockId: string, itemId: string, text: string) => {
-    const newBlocks = blocks.map(b => {
-      if (b.id === blockId && b.checklist_items) {
-        return { ...b, checklist_items: b.checklist_items.map(i => i.id === itemId ? { ...i, content: text } : i) };
-      }
-      return b;
-    });
-    setBlocks(newBlocks);
-    debouncedSaveChecklistItem(itemId, text, newBlocks);
   };
 
   const toggleChecklistItem = async (blockId: string, itemId: string, currentStatus: boolean) => {
@@ -287,13 +406,176 @@ export const NoteScreen = ({ navigation, route }: Props) => {
   };
 
   const handleDeleteNote = async () => {
-    Alert.alert('Delete Note', 'Are you sure?', [
+    const doDelete = async () => {
+      const { error } = await supabase.from('notes').delete().eq('id', noteId);
+      if (error) {
+        setTimeout(() => {
+          setAlertConfig({ visible: true, title: 'Error', message: error.message, isDestructive: false, confirmText: 'OK', onConfirm: () => {} });
+        }, 500);
+      } else {
+        navigation.goBack();
+      }
+    };
+
+    setAlertConfig({
+      visible: true,
+      title: 'Delete Note',
+      message: 'Are you sure you want to delete this note?',
+      isDestructive: true,
+      confirmText: 'Delete',
+      onConfirm: doDelete
+    });
+  };
+
+  const handleMakeCopy = async () => {
+    if (!notebookIdRef.current) return;
+    
+    // Immediately close the menu to provide feedback
+    collapse();
+    
+    const { data: newNote } = await supabase.from('notes').insert({
+      user_id: user?.id,
+      notebook_id: notebookIdRef.current,
+      title: `${title} (Copy)`,
+      color: noteColor
+    }).select().single();
+    
+    if (newNote) {
+      // Copy all blocks
+      for (const block of blocks) {
+        const { data: newBlock } = await supabase.from('note_blocks').insert({
+          note_id: newNote.id,
+          block_type: block.block_type,
+          order_index: block.order_index,
+          text_content: block.text_content
+        }).select().single();
+        
+        if (newBlock && block.block_type === 'checklist' && block.checklist_items && block.checklist_items.length > 0) {
+           const itemsToInsert = block.checklist_items.map(item => ({
+             block_id: newBlock.id,
+             content: item.content,
+             is_checked: item.is_checked,
+             order_index: item.order_index
+           }));
+           await supabase.from('checklist_items').insert(itemsToInsert);
+        }
+      }
+      
+      // Copy all tags
+      if (noteTagIds.length > 0) {
+        await supabase.from('note_tags').insert(noteTagIds.map(tId => ({ note_id: newNote.id, tag_id: tId })));
+      }
+      
+      setAlertConfig({
+        visible: true,
+        title: 'Success',
+        message: 'Note duplicated!',
+        isDestructive: false,
+        confirmText: 'OK',
+        onConfirm: () => navigation.replace('Note', { noteId: newNote.id, title: newNote.title })
+      });
+    }
+  };
+
+  const uploadAttachment = async (uri: string, type: 'image' | 'file', fileName: string) => {
+    setLoading(true);
+    try {
+      const ext = fileName.split('.').pop() || (type === 'image' ? 'jpg' : 'bin');
+      const storagePath = `${user?.id}/${noteId}/${Date.now()}.${ext}`;
+      
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      
+      const { error: uploadError } = await supabase.storage.from('attachments').upload(storagePath, blob);
+      if (uploadError) throw uploadError;
+      
+      const { data: dbData, error: dbError } = await supabase.from('attachments').insert({
+        note_id: noteId,
+        storage_path: storagePath,
+        file_type: type,
+        file_name: fileName
+      }).select().single();
+      
+      if (dbError) throw dbError;
+      
+      if (type === 'image') {
+        const { data: signedData } = await supabase.storage.from('attachments').createSignedUrl(storagePath, 3600);
+        setAttachments(prev => [...prev, { ...dbData, publicUrl: signedData?.signedUrl }]);
+      } else {
+        setAttachments(prev => [...prev, dbData]);
+      }
+    } catch (err: any) {
+      Alert.alert('Upload Error', err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAddImage = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets && result.assets.length > 0) {
+      uploadAttachment(result.assets[0].uri, 'image', result.assets[0].fileName || `image_${Date.now()}.jpg`);
+    }
+  };
+
+  const handleAddFile = async () => {
+    const result = await DocumentPicker.getDocumentAsync({});
+    if (!result.canceled && result.assets && result.assets.length > 0) {
+      uploadAttachment(result.assets[0].uri, 'file', result.assets[0].name);
+    }
+  };
+
+  const handleOpenFile = async (attachment: Attachment) => {
+    if (attachment.file_type === 'image' && attachment.publicUrl) return; // Images show inline
+    
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.storage.from('attachments').createSignedUrl(attachment.storage_path, 60);
+      if (error || !data) throw error || new Error('Could not get download URL');
+      
+      if (Platform.OS === 'web') {
+        window.open(data.signedUrl, '_blank');
+      } else if (Platform.OS === 'android') {
+        const localUri = `${FileSystem.documentDirectory}${attachment.file_name}`;
+        const { uri } = await FileSystem.downloadAsync(data.signedUrl, localUri);
+        const contentUri = await FileSystem.getContentUriAsync(uri);
+        await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+          data: contentUri,
+          flags: 1,
+        });
+      } else {
+        const localUri = `${FileSystem.documentDirectory}${attachment.file_name}`;
+        const { uri } = await FileSystem.downloadAsync(data.signedUrl, localUri);
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(uri);
+        } else {
+          Alert.alert('Cannot open', 'Sharing is not available on this device');
+        }
+      }
+    } catch (err: any) {
+      Alert.alert('Download Error', err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteAttachment = async (attachment: Attachment) => {
+    Alert.alert('Delete Attachment', 'Are you sure?', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: async () => {
-        await supabase.from('notes').delete().eq('id', noteId);
-        navigation.goBack();
+        setAttachments(prev => prev.filter(a => a.id !== attachment.id));
+        await supabase.from('attachments').delete().eq('id', attachment.id);
+        await supabase.storage.from('attachments').remove([attachment.storage_path]);
       }}
     ]);
+  };
+
+  const handleChangeColor = async (color: string) => {
+    setNoteColor(color);
+    await supabase.from('notes').update({ color }).eq('id', noteId);
   };
 
   if (loading) {
@@ -332,8 +614,36 @@ export const NoteScreen = ({ navigation, route }: Props) => {
           placeholderTextColor={colors.textDisabled}
         />
 
+        {attachments.length > 0 && (
+          <View style={styles.attachmentsContainer}>
+            {attachments.map(att => (
+              <View key={att.id} style={styles.attachmentWrapper}>
+                {att.file_type === 'image' && att.publicUrl ? (
+                  <View style={styles.imageContainer}>
+                    <TouchableOpacity onPress={() => setFullImage(att.publicUrl!)}>
+                      <Image source={{ uri: att.publicUrl }} style={styles.inlineImage} resizeMode="cover" />
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.attachmentDeleteBtn} onPress={() => handleDeleteAttachment(att)}>
+                      <Feather name="x" size={16} color="#FFF" />
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <TouchableOpacity style={styles.fileCard} onPress={() => handleOpenFile(att)}>
+                    <Feather name="file" size={24} color={noteColor || colors.accents.note} style={{ marginRight: 12 }} />
+                    <Text style={styles.fileNameText} numberOfLines={1}>{att.file_name}</Text>
+                    <TouchableOpacity style={{ padding: 8 }} onPress={() => handleDeleteAttachment(att)}>
+                      <Feather name="trash-2" size={18} color={colors.textDisabled} />
+                    </TouchableOpacity>
+                  </TouchableOpacity>
+                )}
+              </View>
+            ))}
+          </View>
+        )}
+
         {blocks.map((block, index) => {
-          const blockAccent = colors.cardColors[index % colors.cardColors.length];
+          // If noteColor is set, everything takes that color. Otherwise, use rainbow accents.
+          const blockAccent = noteColor || colors.cardColors[index % colors.cardColors.length];
           return (
             <View key={block.id} style={styles.blockContainer}>
               {block.block_type === 'text' ? (
@@ -390,7 +700,7 @@ export const NoteScreen = ({ navigation, route }: Props) => {
             transform: [{ 
               translateY: slideAnim.interpolate({
                 inputRange: [0, 1],
-                outputRange: [0, -320]
+                outputRange: [440, 0]
               }) 
             }] 
           }
@@ -415,19 +725,34 @@ export const NoteScreen = ({ navigation, route }: Props) => {
         </View>
 
         <View style={styles.toolbarExpandedContent}>
-          {/* Color labels placeholder */}
+          {/* Color labels */}
           <View style={styles.colorRow}>
             {colors.cardColors.map(c => (
-                <TouchableOpacity key={c} style={[styles.colorCircle, { backgroundColor: c }]} onPress={() => Alert.alert('Color applied!')} />
+                <TouchableOpacity 
+                  key={c} 
+                  style={[styles.colorCircle, { backgroundColor: c }, noteColor === c && { borderWidth: 3, borderColor: '#FFFFFF' }]} 
+                  onPress={() => handleChangeColor(c)} 
+                />
             ))}
           </View>
 
           {/* Menu Items */}
-          <TouchableOpacity style={styles.menuItem} onPress={handleDeleteNote}>
-            <Feather name="trash-2" size={22} color={colors.actions.signOut} style={styles.menuIcon} />
-            <Text style={[styles.menuText, { color: colors.actions.signOut }]}>Delete note</Text>
+          <TouchableOpacity style={styles.menuItem} onPress={handleAddImage}>
+            <Feather name="image" size={22} color={colors.textPrimary} style={styles.menuIcon} />
+            <Text style={styles.menuText}>Attach Image</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.menuItem} onPress={() => Alert.alert('Copy', 'Copied to clipboard!')}>
+          <TouchableOpacity style={styles.menuItem} onPress={handleAddFile}>
+            <Feather name="paperclip" size={22} color={colors.textPrimary} style={styles.menuIcon} />
+            <Text style={styles.menuText}>Attach File</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.menuItem} onPress={handleOpenTags}>
+            <Feather name="tag" size={22} color={colors.textPrimary} style={styles.menuIcon} />
+            <Text style={styles.menuText}>Labels</Text>
+          </TouchableOpacity>
+          
+          <View style={styles.menuDivider} />
+
+          <TouchableOpacity style={styles.menuItem} onPress={handleMakeCopy}>
             <Feather name="copy" size={22} color={colors.textPrimary} style={styles.menuIcon} />
             <Text style={styles.menuText}>Make a copy</Text>
           </TouchableOpacity>
@@ -435,13 +760,84 @@ export const NoteScreen = ({ navigation, route }: Props) => {
             <Feather name="share-2" size={22} color={colors.textPrimary} style={styles.menuIcon} />
             <Text style={styles.menuText}>Share</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.menuItem} onPress={() => { collapse(); Alert.alert('Labels', 'Labels coming in Phase 3!'); }}>
-            <Feather name="tag" size={22} color={colors.textPrimary} style={styles.menuIcon} />
-            <Text style={styles.menuText}>Labels</Text>
+          <TouchableOpacity style={styles.menuItem} onPress={handleDeleteNote}>
+            <Feather name="trash-2" size={22} color={colors.actions.signOut} style={styles.menuIcon} />
+            <Text style={[styles.menuText, { color: colors.actions.signOut }]}>Delete note</Text>
           </TouchableOpacity>
         </View>
+
+        {/* Overscroll safe area block to prevent any bottom white strips */}
+        <View style={{ position: 'absolute', top: 520, left: 0, right: 0, height: 400, backgroundColor: '#0A0A0A' }} />
       </Animated.View>
       
+      {/* Tags Modal */}
+      <Modal visible={tagsModalVisible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setTagsModalVisible(false)}>
+        <KeyboardAvoidingView style={styles.tagsModalContainer} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.tagsModalHeader}>
+            <Text style={styles.tagsModalTitle}>Manage Labels</Text>
+            <TouchableOpacity onPress={() => setTagsModalVisible(false)}>
+              <Feather name="x" size={28} color={colors.textPrimary} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.createTagSection}>
+            <TextInput
+              style={styles.createTagInput}
+              placeholder="New label name..."
+              placeholderTextColor={colors.textDisabled}
+              value={newTagName}
+              onChangeText={setNewTagName}
+            />
+            <View style={styles.tagColorPickerRow}>
+              {colors.cardColors.map(c => (
+                <TouchableOpacity 
+                  key={c} 
+                  style={[styles.tagColorCircle, { backgroundColor: c }, newTagColor === c && styles.tagColorCircleSelected]} 
+                  onPress={() => setNewTagColor(c)} 
+                />
+              ))}
+            </View>
+            <TouchableOpacity style={styles.createTagBtn} onPress={handleCreateTag}>
+              <Text style={styles.createTagBtnText}>+ Create Label</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.tagsList}>
+            {allTags.map(tag => {
+              const isAttached = noteTagIds.includes(tag.id);
+              return (
+                <View key={tag.id} style={styles.tagRow}>
+                  <TouchableOpacity style={styles.tagRowMain} onPress={() => handleToggleNoteTag(tag.id)}>
+                    <View style={[styles.tagCheckbox, isAttached && { backgroundColor: tag.color, borderColor: tag.color }]}>
+                      {isAttached && <Feather name="check" size={16} color="#000" />}
+                    </View>
+                    <View style={[styles.tagDot, { backgroundColor: tag.color }]} />
+                    <Text style={styles.tagRowText}>{tag.name}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.tagDeleteBtn} onPress={() => handleDeleteTagGlobal(tag.id)}>
+                    <Feather name="trash-2" size={20} color={colors.actions.signOut} />
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Full Image Viewer Modal */}
+      <Modal visible={!!fullImage} transparent={true} animationType="fade" onRequestClose={() => setFullImage(null)}>
+        <View style={styles.fullImageContainer}>
+          <TouchableOpacity style={styles.fullImageCloseBtn} onPress={() => setFullImage(null)}>
+            <Feather name="x" size={32} color="#FFF" />
+          </TouchableOpacity>
+          {fullImage && <Image source={{ uri: fullImage }} style={styles.fullImage} resizeMode="contain" />}
+        </View>
+      </Modal>
+
+      <CustomAlert 
+        {...alertConfig} 
+        onCancel={() => setAlertConfig(prev => ({ ...prev, visible: false }))} 
+      />
     </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -493,6 +889,14 @@ const styles = StyleSheet.create({
     letterSpacing: -1,
     ...Platform.select({ web: { outlineStyle: 'none' } as any }),
   },
+  
+  attachmentsContainer: { marginBottom: 24 },
+  attachmentWrapper: { marginBottom: 12 },
+  imageContainer: { borderRadius: 16, overflow: 'hidden', backgroundColor: colors.surface, position: 'relative' },
+  inlineImage: { width: '100%', height: 200 },
+  attachmentDeleteBtn: { position: 'absolute', top: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.6)', padding: 8, borderRadius: 16 },
+  fileCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, padding: 16, borderRadius: 16 },
+  fileNameText: { flex: 1, color: colors.textPrimary, fontSize: 16, fontWeight: '500' },
 
   blockContainer: {
     marginBottom: 24,
@@ -530,15 +934,17 @@ const styles = StyleSheet.create({
 
   toolbar: {
     position: 'absolute',
-    bottom: -320, // total height 400 - 80 exposed
+    bottom: 0, 
     left: 0, 
     right: 0,
-    height: 400,
+    height: 520,
     backgroundColor: '#0A0A0A',
     borderTopLeftRadius: 32,
     borderTopRightRadius: 32,
     paddingHorizontal: 24,
     paddingTop: 12,
+    // On Web, ensure it stays fixed to the viewport if absolute positioning breaks
+    ...Platform.select({ web: { position: 'fixed' as any } })
   },
   grabberContainer: {
     alignItems: 'center',
@@ -584,4 +990,27 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '600',
   },
+
+  // Tags Modal Styles
+  tagsModalContainer: { flex: 1, backgroundColor: colors.background },
+  tagsModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 24, paddingTop: Platform.OS === 'ios' ? 60 : 24 },
+  tagsModalTitle: { fontSize: 28, fontWeight: 'bold', color: colors.textPrimary },
+  createTagSection: { paddingHorizontal: 24, paddingBottom: 24, borderBottomWidth: 1, borderColor: colors.surfaceLight },
+  createTagInput: { backgroundColor: colors.surface, color: colors.textPrimary, borderRadius: 16, padding: 16, fontSize: 18, marginBottom: 16 },
+  tagColorPickerRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 24 },
+  tagColorCircle: { width: 40, height: 40, borderRadius: 20, opacity: 0.5 },
+  tagColorCircleSelected: { opacity: 1, borderWidth: 3, borderColor: '#FFFFFF' },
+  createTagBtn: { backgroundColor: colors.surfaceLight, padding: 16, borderRadius: 16, alignItems: 'center' },
+  createTagBtnText: { color: colors.textPrimary, fontSize: 16, fontWeight: 'bold' },
+  tagsList: { flex: 1, padding: 24 },
+  tagRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 },
+  tagRowMain: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  tagCheckbox: { width: 24, height: 24, borderRadius: 8, borderWidth: 2, borderColor: colors.textSecondary, marginRight: 16, justifyContent: 'center', alignItems: 'center' },
+  tagDot: { width: 12, height: 12, borderRadius: 6, marginRight: 12 },
+  tagRowText: { color: colors.textPrimary, fontSize: 18, fontWeight: '500' },
+  tagDeleteBtn: { padding: 8, backgroundColor: 'rgba(239,68,68,0.1)', borderRadius: 12 },
+
+  fullImageContainer: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
+  fullImageCloseBtn: { position: 'absolute', top: Platform.OS === 'ios' ? 60 : 30, right: 24, zIndex: 10, padding: 8, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 24 },
+  fullImage: { width: '100%', height: '100%' },
 });

@@ -1,0 +1,2 @@
+ALTER TABLE public.notebooks ADD COLUMN is_pinned BOOLEAN DEFAULT FALSE;
+ALTER TABLE public.notes ADD COLUMN is_pinned BOOLEAN DEFAULT FALSE;
