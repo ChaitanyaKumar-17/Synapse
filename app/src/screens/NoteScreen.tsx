@@ -14,6 +14,8 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as IntentLauncher from 'expo-intent-launcher';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { scheduleReminder, cancelReminder } from '../lib/notifications';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Note'>;
@@ -70,6 +72,11 @@ export const NoteScreen = ({ navigation, route }: Props) => {
   const [alertConfig, setAlertConfig] = useState({
     visible: false, title: '', message: '', isDestructive: false, confirmText: 'OK', onConfirm: () => {}
   });
+
+  const [reminderAt, setReminderAt] = useState<Date | null>(null);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [tempDate, setTempDate] = useState<Date>(new Date());
 
   // Use refs for debouncing to avoid stale closures
   const saveTimeoutRef = useRef<{ [key: string]: NodeJS.Timeout }>({});
@@ -180,12 +187,13 @@ export const NoteScreen = ({ navigation, route }: Props) => {
 
     // Fetch title, color, notebookId
     let currentTitle = route.params.title || '';
-    const { data: noteData } = await supabase.from('notes').select('title, notebook_id, color').eq('id', noteId).single();
+    const { data: noteData } = await supabase.from('notes').select('title, notebook_id, color, reminder_at').eq('id', noteId).single();
     if (noteData) {
       currentTitle = noteData.title;
       setTitle(currentTitle);
       notebookIdRef.current = noteData.notebook_id;
       if (noteData.color) setNoteColor(noteData.color);
+      if (noteData.reminder_at) setReminderAt(new Date(noteData.reminder_at));
     }
 
     // Fetch blocks
@@ -578,6 +586,25 @@ export const NoteScreen = ({ navigation, route }: Props) => {
     await supabase.from('notes').update({ color }).eq('id', noteId);
   };
 
+  const onDateChange = (event: any, selectedDate?: Date) => {
+    setShowDatePicker(false);
+    if (selectedDate && event.type === 'set') {
+      setTempDate(selectedDate);
+      if (Platform.OS === 'android') {
+        setShowTimePicker(true);
+      }
+    }
+  };
+
+  const onTimeChange = async (event: any, selectedDate?: Date) => {
+    setShowTimePicker(false);
+    if (selectedDate && event.type === 'set') {
+      setReminderAt(selectedDate);
+      await supabase.from('notes').update({ reminder_at: selectedDate.toISOString() }).eq('id', noteId);
+      await scheduleReminder(title || 'Note Reminder', 'You have a scheduled reminder!', selectedDate, noteId, 'note');
+    }
+  };
+
   if (loading) {
     return <View style={styles.loadingContainer}><ActivityIndicator size="large" color={colors.textPrimary} /></View>;
   }
@@ -592,6 +619,27 @@ export const NoteScreen = ({ navigation, route }: Props) => {
             <Feather name="chevron-left" size={26} color="#FFFFFF" />
           </TouchableOpacity>
           <View style={styles.rightHeaderActions}>
+            <TouchableOpacity style={[styles.circleBtn, styles.circleBtnSmall]} onPress={() => {
+              if (reminderAt) {
+                setAlertConfig({
+                  visible: true,
+                  title: 'Remove Reminder?',
+                  message: 'Do you want to remove this reminder?',
+                  isDestructive: true,
+                  confirmText: 'Remove',
+                  onConfirm: async () => {
+                    setReminderAt(null);
+                    await supabase.from('notes').update({ reminder_at: null }).eq('id', noteId);
+                    await cancelReminder(noteId);
+                  }
+                });
+              } else {
+                setTempDate(new Date());
+                setShowDatePicker(true);
+              }
+            }}>
+              <Feather name="bell" size={20} color={reminderAt ? colors.accents.home : "#FFF"} />
+            </TouchableOpacity>
             <TouchableOpacity style={[styles.circleBtn, styles.circleBtnSmall]} onPress={handleUndo}>
               <Feather name="corner-up-left" size={20} color={colors.cardColors[4]} />
             </TouchableOpacity>
@@ -838,6 +886,24 @@ export const NoteScreen = ({ navigation, route }: Props) => {
         {...alertConfig} 
         onCancel={() => setAlertConfig(prev => ({ ...prev, visible: false }))} 
       />
+
+      {showDatePicker && (
+        <DateTimePicker
+          value={tempDate}
+          mode="date"
+          display="default"
+          onChange={onDateChange}
+          minimumDate={new Date()}
+        />
+      )}
+      {showTimePicker && (
+        <DateTimePicker
+          value={tempDate}
+          mode="time"
+          display="default"
+          onChange={onTimeChange}
+        />
+      )}
     </KeyboardAvoidingView>
     </SafeAreaView>
   );

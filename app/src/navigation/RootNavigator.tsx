@@ -7,6 +7,7 @@ import { AuthScreen } from '../screens/AuthScreen';
 import { HomeScreen } from '../screens/HomeScreen';
 import { NotebookScreen } from '../screens/NotebookScreen';
 import { NoteScreen } from '../screens/NoteScreen';
+import { TodoListScreen } from '../screens/TodoListScreen';
 
 // Placeholders for remaining screens
 const ChatScreen = () => (
@@ -20,6 +21,7 @@ export type RootStackParamList = {
   Home: undefined;
   Notebook: { notebookId: string; name?: string };
   Note: { noteId: string; title?: string };
+  TodoList: { listId: string; title?: string };
   Chat: { notebookId?: string };
 };
 
@@ -42,6 +44,7 @@ export const RootNavigator = () => {
           <Stack.Screen name="Home" component={HomeScreen} options={{ headerShown: false }} />
           <Stack.Screen name="Notebook" component={NotebookScreen} />
           <Stack.Screen name="Note" component={NoteScreen} options={{ title: '' }} />
+          <Stack.Screen name="TodoList" component={TodoListScreen} options={{ title: '' }} />
           <Stack.Screen name="Chat" component={ChatScreen} />
         </>
       ) : (

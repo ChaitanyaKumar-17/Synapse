@@ -1,7 +1,8 @@
 import 'react-native-url-polyfill/auto';
 import React, { useEffect } from 'react';
-import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
-import { RootNavigator } from './src/navigation/RootNavigator';
+import { NavigationContainer, DefaultTheme, createNavigationContainerRef } from '@react-navigation/native';
+import { RootNavigator, RootStackParamList } from './src/navigation/RootNavigator';
+import * as Notifications from 'expo-notifications';
 import { colors } from './src/theme/colors';
 import { supabase } from './src/lib/supabase';
 import { useAuthStore } from './src/store/authStore';
@@ -18,6 +19,8 @@ const NavigationTheme = {
     primary: colors.accents.home,
   },
 };
+
+export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
 export default function App() {
   const setSession = useAuthStore((state) => state.setSession);
@@ -38,12 +41,28 @@ export default function App() {
       setSession(session);
     });
 
-    return () => subscription.unsubscribe();
+    const responseListener = Notifications.addNotificationResponseReceivedListener(response => {
+      const data = response.notification.request.content.data;
+      if (data?.itemId && data?.itemType) {
+        if (navigationRef.isReady()) {
+          if (data.itemType === 'note') {
+            navigationRef.navigate('Note', { noteId: data.itemId, title: '' });
+          } else if (data.itemType === 'todo_list') {
+            navigationRef.navigate('TodoList', { listId: data.itemId, title: '' });
+          }
+        }
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+      Notifications.removeNotificationSubscription(responseListener);
+    };
   }, [setSession]);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <NavigationContainer theme={NavigationTheme}>
+      <NavigationContainer theme={NavigationTheme} ref={navigationRef}>
         <RootNavigator />
       </NavigationContainer>
     </GestureHandlerRootView>

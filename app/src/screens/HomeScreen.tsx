@@ -8,7 +8,7 @@ import { useAuthStore } from '../store/authStore';
 import { CustomAlert } from '../components/CustomAlert';
 import { Feather } from '@expo/vector-icons';
 import Sortable from 'react-native-sortables';
-import Animated from 'react-native-reanimated';
+import Animated, { useAnimatedRef } from 'react-native-reanimated';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 type Props = {
@@ -18,7 +18,7 @@ type Props = {
 type Item = {
   id: string;
   name: string;
-  type: 'notebook' | 'folder' | 'note';
+  type: 'notebook' | 'folder' | 'note' | 'todo_list';
   created_at: string;
   is_pinned: boolean;
   pinned_at?: string;
@@ -42,10 +42,11 @@ export const HomeScreen = ({ navigation }: Props) => {
   const username = user?.user_metadata?.username || user?.email?.split('@')[0] || 'ME';
   
   const [activeTab, setActiveTab] = useState<Tab>('Home');
+  const scrollRef = useAnimatedRef<Animated.ScrollView>();
 
   const [allNotebooks, setAllNotebooks] = useState<any[]>([]);
   const [allNotes, setAllNotes] = useState<any[]>([]);
-  const [todoNoteIds, setTodoNoteIds] = useState<Set<string>>(new Set());
+  const [allTodoLists, setAllTodoLists] = useState<any[]>([]);
 
   const [loading, setLoading] = useState(true);
   
@@ -57,7 +58,7 @@ export const HomeScreen = ({ navigation }: Props) => {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
-  const [editingType, setEditingType] = useState<'notebook' | 'note' | null>(null);
+  const [editingType, setEditingType] = useState<'notebook' | 'note' | 'todo_list' | null>(null);
 
   const [actionMenu, setActionMenu] = useState<{ visible: boolean, item: Item | null }>({ visible: false, item: null });
 
@@ -71,11 +72,11 @@ export const HomeScreen = ({ navigation }: Props) => {
   const fetchData = async () => {
     const { data: nbData } = await supabase.from('notebooks').select('id, name, created_at, is_pinned, parent_notebook_id, pinned_at').order('created_at', { ascending: true });
     const { data: nData } = await supabase.from('notes').select('id, title, created_at, is_pinned, pinned_at').order('created_at', { ascending: true });
-    const { data: tdData } = await supabase.from('note_blocks').select('note_id').eq('block_type', 'checklist');
+    const { data: tlData } = await supabase.from('todo_lists').select('*').order('created_at', { ascending: true });
     
     setAllNotebooks(nbData || []);
     setAllNotes(nData || []);
-    setTodoNoteIds(new Set(tdData?.map(d => d.note_id) || []));
+    setAllTodoLists(tlData || []);
     setLoading(false);
   };
 
@@ -103,7 +104,8 @@ export const HomeScreen = ({ navigation }: Props) => {
     if (activeTab === 'Home' && layoutLoaded && user?.id) {
        const pinnedNotebooks = allNotebooks.filter(nb => nb.is_pinned).map(n => n.id);
        const pinnedNotes = allNotes.filter(n => n.is_pinned).map(n => n.id);
-       const allPinnedIds = [...pinnedNotebooks, ...pinnedNotes];
+       const pinnedTodoLists = allTodoLists.filter(t => t.is_pinned).map(t => t.id);
+       const allPinnedIds = [...pinnedNotebooks, ...pinnedNotes, ...pinnedTodoLists];
 
        let newLayout = [...dashboardLayout];
        let changed = false;
@@ -119,7 +121,7 @@ export const HomeScreen = ({ navigation }: Props) => {
 
        const unplacedIds = allPinnedIds.filter(id => !newLayout.includes(id));
        if (unplacedIds.length > 0) {
-          const unplacedItems = [...allNotebooks, ...allNotes].filter(i => unplacedIds.includes(i.id));
+          const unplacedItems = [...allNotebooks, ...allNotes, ...allTodoLists].filter(i => unplacedIds.includes(i.id));
           unplacedItems.sort((a, b) => new Date(a.pinned_at || 0).getTime() - new Date(b.pinned_at || 0).getTime());
           newLayout = [...newLayout, ...unplacedItems.map(i => i.id)];
           changed = true;
@@ -130,7 +132,7 @@ export const HomeScreen = ({ navigation }: Props) => {
           AsyncStorage.setItem(`dashboard_layout_${user.id}`, JSON.stringify(newLayout));
        }
     }
-  }, [activeTab, layoutLoaded, user?.id, allNotebooks, allNotes, dashboardLayout]);
+  }, [activeTab, layoutLoaded, user?.id, allNotebooks, allNotes, allTodoLists, dashboardLayout]);
 
   const displayedItems = useMemo(() => {
     let items: DisplayItem[] = [];
@@ -139,7 +141,8 @@ export const HomeScreen = ({ navigation }: Props) => {
     if (activeTab === 'Home') {
       const pinnedNotebooks = allNotebooks.filter(nb => nb.is_pinned).map(n => ({ id: n.id, name: n.name, type: (n.parent_notebook_id ? 'folder' : 'notebook') as const, created_at: n.created_at, is_pinned: n.is_pinned, pinned_at: n.pinned_at }));
       const pinnedNotes = allNotes.filter(n => n.is_pinned).map(n => ({ id: n.id, name: n.title, type: 'note' as const, created_at: n.created_at, is_pinned: n.is_pinned, pinned_at: n.pinned_at }));
-      const allPinned = [...pinnedNotebooks, ...pinnedNotes];
+      const pinnedTodoLists = allTodoLists.filter(t => t.is_pinned).map(t => ({ id: t.id, name: t.title, type: 'todo_list' as const, created_at: t.created_at, is_pinned: t.is_pinned, pinned_at: t.pinned_at }));
+      const allPinned = [...pinnedNotebooks, ...pinnedNotes, ...pinnedTodoLists];
 
       let layoutIds = [...dashboardLayout];
       
@@ -164,7 +167,7 @@ export const HomeScreen = ({ navigation }: Props) => {
       items = allNotebooks.filter(nb => nb.parent_notebook_id === null).map(n => ({ id: n.id, name: n.name, type: 'notebook' as const, created_at: n.created_at, is_pinned: n.is_pinned, pinned_at: n.pinned_at }));
       if (searchQuery.trim()) items = items.filter(i => i.name.toLowerCase().includes(searchQuery.toLowerCase()));
     } else if (activeTab === 'To-do') {
-      items = allNotes.filter(n => todoNoteIds.has(n.id)).map(n => ({ id: n.id, name: n.title, type: 'note' as const, created_at: n.created_at, is_pinned: n.is_pinned, pinned_at: n.pinned_at }));
+      items = allTodoLists.map(t => ({ id: t.id, name: t.title, type: 'todo_list' as const, created_at: t.created_at, is_pinned: t.is_pinned, pinned_at: t.pinned_at }));
       if (searchQuery.trim()) items = items.filter(i => i.name.toLowerCase().includes(searchQuery.toLowerCase()));
     }
 
@@ -181,7 +184,7 @@ export const HomeScreen = ({ navigation }: Props) => {
     }
 
     return items;
-  }, [activeTab, allNotebooks, allNotes, todoNoteIds, searchQuery, sortConfig, user?.id, dashboardLayout, layoutLoaded]);
+  }, [activeTab, allNotebooks, allNotes, allTodoLists, searchQuery, sortConfig, user?.id, dashboardLayout, layoutLoaded]);
 
   const groupedData = useMemo(() => {
     const groups = [];
@@ -192,9 +195,9 @@ export const HomeScreen = ({ navigation }: Props) => {
         continue;
       }
       const type = displayedItems[i].type;
-      if (type === 'notebook' || type === 'folder') {
+      if (type === 'notebook' || type === 'folder' || type === 'todo_list') {
         const pair = [{ item: displayedItems[i] as Item, index: i }];
-        if (i + 1 < displayedItems.length && (displayedItems[i+1].type === 'notebook' || displayedItems[i+1].type === 'folder')) {
+        if (i + 1 < displayedItems.length && (displayedItems[i+1].type === 'notebook' || displayedItems[i+1].type === 'folder' || displayedItems[i+1].type === 'todo_list')) {
           pair.push({ item: displayedItems[i+1] as Item, index: i+1 });
           i += 2;
         } else {
@@ -211,29 +214,31 @@ export const HomeScreen = ({ navigation }: Props) => {
 
   const handleCreateNotebook = async () => {
     if (!newNotebookName.trim()) { setModalVisible(false); return; }
-    const { error } = await supabase.from('notebooks').insert([{ name: newNotebookName.trim(), user_id: user?.id }]);
+    const table = activeTab === 'To-do' ? 'todo_lists' : 'notebooks';
+    const field = activeTab === 'To-do' ? 'title' : 'name';
+    const { error } = await supabase.from(table).insert([{ [field]: newNotebookName.trim(), user_id: user?.id }]);
     if (error) setAlertConfig({ visible: true, title: 'Error', message: error.message, isDestructive: false, confirmText: 'OK', onConfirm: () => {} });
     else { setNewNotebookName(''); setModalVisible(false); fetchData(); }
   };
 
-  const handleUpdateItem = async (id: string, type: 'notebook'|'note') => {
+  const handleUpdateItem = async (id: string, type: 'notebook'|'note'|'todo_list') => {
     if (!editingName.trim()) { setEditingId(null); return; }
-    const table = type === 'notebook' ? 'notebooks' : 'notes';
+    const table = type === 'todo_list' ? 'todo_lists' : type === 'notebook' ? 'notebooks' : 'notes';
     const field = type === 'notebook' ? 'name' : 'title';
     const { error } = await supabase.from(table).update({ [field]: editingName.trim() }).eq('id', id);
     if (error) setAlertConfig({ visible: true, title: 'Error', message: error.message, isDestructive: false, confirmText: 'OK', onConfirm: () => {} });
     else { setEditingId(null); fetchData(); }
   };
 
-  const handleDeleteItem = async (id: string, name: string, type: 'notebook'|'note') => {
+  const handleDeleteItem = async (id: string, name: string, type: 'notebook'|'note'|'todo_list') => {
     setAlertConfig({
       visible: true,
-      title: `Delete ${type === 'notebook' ? 'Notebook' : 'Note'}`,
+      title: `Delete ${type === 'notebook' ? 'Notebook' : type === 'note' ? 'Note' : 'To-do List'}`,
       message: `Are you sure you want to delete "${name}"?`,
       isDestructive: true,
       confirmText: 'Delete',
       onConfirm: async () => {
-        const table = type === 'notebook' ? 'notebooks' : 'notes';
+        const table = type === 'todo_list' ? 'todo_lists' : type === 'notebook' ? 'notebooks' : 'notes';
         const { error } = await supabase.from(table).delete().eq('id', id);
         if (error) {
           setTimeout(() => setAlertConfig({ visible: true, title: 'Error', message: error.message, isDestructive: false, confirmText: 'OK', onConfirm: () => {} }), 500);
@@ -243,7 +248,7 @@ export const HomeScreen = ({ navigation }: Props) => {
   };
 
   const handleTogglePin = async (item: Item) => {
-    const table = item.type === 'note' ? 'notes' : 'notebooks';
+    const table = item.type === 'todo_list' ? 'todo_lists' : item.type === 'note' ? 'notes' : 'notebooks';
     const newPinned = !item.is_pinned;
     const pinned_at = newPinned ? new Date().toISOString() : null;
     const { error } = await supabase.from(table).update({ is_pinned: newPinned, pinned_at }).eq('id', item.id);
@@ -283,7 +288,7 @@ export const HomeScreen = ({ navigation }: Props) => {
                 value={editingName}
                 onChangeText={setEditingName}
                 autoFocus
-                onSubmitEditing={() => handleUpdateItem(item.id, item.type === 'note' ? 'note' : 'notebook')}
+                onSubmitEditing={() => handleUpdateItem(item.id, item.type === 'note' ? 'note' : item.type === 'todo_list' ? 'todo_list' : 'notebook')}
               />
             </View>
           </View>
@@ -298,7 +303,7 @@ export const HomeScreen = ({ navigation }: Props) => {
                 value={editingName}
                 onChangeText={setEditingName}
                 autoFocus
-                onSubmitEditing={() => handleUpdateItem(item.id, item.type === 'note' ? 'note' : 'notebook')}
+                onSubmitEditing={() => handleUpdateItem(item.id, item.type === 'note' ? 'note' : item.type === 'todo_list' ? 'todo_list' : 'notebook')}
               />
             </View>
           </View>
@@ -306,23 +311,29 @@ export const HomeScreen = ({ navigation }: Props) => {
       }
     }
 
-    if (item.type === 'folder') {
+    if (item.type === 'folder' || item.type === 'todo_list') {
+      const isFolder = item.type === 'folder';
       return (
         <TouchableOpacity 
           key={item.id}
           style={[styles.folderSquareItem, { width: halfWidth, height: halfWidth }]}
           activeOpacity={0.7}
-          onPress={() => navigation.navigate('Notebook', { notebookId: item.id, name: item.name })}
+          onPress={() => {
+            if (isFolder) navigation.navigate('Notebook', { notebookId: item.id, name: item.name });
+            else navigation.navigate('TodoList', { listId: item.id, title: item.name });
+          }}
           onLongPress={() => setActionMenu({ visible: true, item })}
         >
-          <Text style={styles.folderSquareIcon}>📁</Text>
+          <Text style={styles.folderSquareIcon}>{isFolder ? '📁' : '🗒️'}</Text>
           <Text style={styles.folderSquareTitle} numberOfLines={2}>{item.name}</Text>
-          {item.is_pinned && <Feather name="anchor" size={14} color="rgba(255,255,255,0.5)" style={{ marginTop: 4 }} />}
+          {item.is_pinned && activeTab !== 'Home' && <Feather name="anchor" size={14} color="rgba(255,255,255,0.5)" style={{ marginTop: 4 }} />}
         </TouchableOpacity>
       );
     }
 
     const isHalf = item.type === 'notebook';
+    const isNote = item.type === 'note';
+    
     return (
       <TouchableOpacity 
         key={item.id}
@@ -335,13 +346,17 @@ export const HomeScreen = ({ navigation }: Props) => {
         onLongPress={() => setActionMenu({ visible: true, item })}
       >
         <View style={styles.cardContent}>
-          <View style={{ flex: 1, flexDirection: item.type === 'note' ? 'row' : 'column', alignItems: item.type === 'note' ? 'center' : 'flex-start' }}>
-            {item.type === 'note' && <View style={[styles.iconWrapper, { marginBottom: 0, marginRight: 16 }]}><Text style={styles.icon}>✏️</Text></View>}
-            <Text style={[styles.cardTitle, { flex: 1 }]} numberOfLines={item.type === 'note' ? 1 : 2}>{item.name}</Text>
+          <View style={{ flex: 1, flexDirection: isNote ? 'row' : 'column', alignItems: isNote ? 'center' : 'flex-start' }}>
+            {isNote && (
+              <View style={[styles.iconWrapper, { marginBottom: 0, marginRight: 16 }]}>
+                <Text style={styles.icon}>✏️</Text>
+              </View>
+            )}
+            <Text style={[styles.cardTitle, { flex: 1 }]} numberOfLines={isNote ? 1 : 2}>{item.name}</Text>
           </View>
           <View style={styles.cardBottomRow}>
-            <Text style={styles.cardDate}>{new Date(item.created_at).toLocaleDateString()} {item.type === 'note' && '• NOTE'}</Text>
-            {item.is_pinned && <Feather name="anchor" size={14} color="rgba(0,0,0,0.5)" />}
+            <Text style={styles.cardDate}>{new Date(item.created_at).toLocaleDateString()} {isNote && '• NOTE'}</Text>
+            {item.is_pinned && activeTab !== 'Home' && <Feather name="anchor" size={14} color="rgba(0,0,0,0.5)" />}
           </View>
         </View>
       </TouchableOpacity>
@@ -379,13 +394,13 @@ export const HomeScreen = ({ navigation }: Props) => {
           ))}
         </View>
 
-        {activeTab === 'Notebooks' && (
+        {activeTab !== 'Home' && (
           <View style={styles.searchRow}>
             <View style={styles.searchBar}>
               <Feather name="search" size={20} color={colors.textSecondary} />
               <TextInput
                 style={styles.searchInput}
-                placeholder="Search notebooks..."
+                placeholder={activeTab === 'To-do' ? "Search to-dos..." : "Search notebooks..."}
                 placeholderTextColor={colors.textDisabled}
                 value={searchQuery}
                 onChangeText={setSearchQuery}
@@ -393,10 +408,12 @@ export const HomeScreen = ({ navigation }: Props) => {
             </View>
             <TouchableOpacity 
               style={styles.sortBtn}
-              onPress={() => setSortConfig(prev => ({
-                field: prev.field === 'date' ? 'name' : 'date',
-                order: prev.field === 'date' ? 'asc' : (prev.order === 'asc' ? 'desc' : 'asc')
-              }))}
+              onPress={() => setSortConfig(prev => {
+                if (prev.field === 'date' && prev.order === 'asc') return { field: 'date', order: 'desc' };
+                if (prev.field === 'date' && prev.order === 'desc') return { field: 'name', order: 'asc' };
+                if (prev.field === 'name' && prev.order === 'asc') return { field: 'name', order: 'desc' };
+                return { field: 'date', order: 'asc' };
+              })}
             >
               <Text style={styles.sortBtnText}>Sort by: <Text style={{ color: colors.textPrimary }}>{sortConfig.field === 'date' ? 'Date' : 'Name'}</Text></Text>
               <Feather name={sortConfig.order === 'asc' ? 'arrow-up' : 'arrow-down'} size={16} color={colors.textPrimary} style={{ marginLeft: 8 }} />
@@ -420,8 +437,9 @@ export const HomeScreen = ({ navigation }: Props) => {
            </Text>
         </View>
       ) : activeTab === 'Home' ? (
-        <Animated.ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 100 }} showsVerticalScrollIndicator={false}>
+        <Animated.ScrollView ref={scrollRef} style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 100 }} showsVerticalScrollIndicator={false}>
           <Sortable.Flex
+            scrollableRef={scrollRef}
             flexDirection="row"
             flexWrap="wrap"
             justifyContent="space-between"
@@ -463,17 +481,15 @@ export const HomeScreen = ({ navigation }: Props) => {
       )}
 
       {/* Floating Action Button */}
-      {activeTab !== 'To-do' && (
-        <TouchableOpacity style={styles.fab} onPress={() => setModalVisible(true)} activeOpacity={0.8}>
-          <Text style={styles.fabText}>+</Text>
-        </TouchableOpacity>
-      )}
+      <TouchableOpacity style={styles.fab} onPress={() => setModalVisible(true)} activeOpacity={0.8}>
+        <Text style={styles.fabText}>+</Text>
+      </TouchableOpacity>
 
       {/* Creation Modal */}
       <Modal visible={isModalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView style={styles.modalContainer} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-            <Text style={styles.modalTitle}>New Notebook</Text>
+            <Text style={styles.modalTitle}>{activeTab === 'To-do' ? 'New To-do List' : 'New Notebook'}</Text>
             <TextInput
               style={styles.modalInput}
               autoFocus
