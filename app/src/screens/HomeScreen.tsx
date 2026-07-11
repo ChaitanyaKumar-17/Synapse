@@ -10,6 +10,7 @@ import { Feather } from '@expo/vector-icons';
 import Sortable from 'react-native-sortables';
 import Animated, { useAnimatedRef } from 'react-native-reanimated';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ChatOverlay } from '../components/ChatOverlay';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Home'>;
@@ -58,8 +59,9 @@ export const HomeScreen = ({ navigation }: Props) => {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
-  const [editingType, setEditingType] = useState<'notebook' | 'note' | 'todo_list' | null>(null);
+  const [editingType, setEditingType] = useState<'notebook'|'note'|'todo_list' | null>(null);
 
+  const [isChatVisible, setChatVisible] = useState(false);
   const [actionMenu, setActionMenu] = useState<{ visible: boolean, item: Item | null }>({ visible: false, item: null });
 
   const [dashboardLayout, setDashboardLayout] = useState<string[]>([]);
@@ -556,6 +558,16 @@ export const HomeScreen = ({ navigation }: Props) => {
         {...alertConfig} 
         onCancel={() => setAlertConfig(prev => ({ ...prev, visible: false }))} 
       />
+
+      <TouchableOpacity 
+        style={styles.chatFab}
+        activeOpacity={0.8}
+        onPress={() => setChatVisible(true)}
+      >
+        <Feather name="message-circle" size={28} color="#050505" />
+      </TouchableOpacity>
+
+      <ChatOverlay visible={isChatVisible} onClose={() => setChatVisible(false)} />
     </View>
   );
 };
@@ -736,4 +748,20 @@ const styles = StyleSheet.create({
   actionMenuItem: { flexDirection: 'row', alignItems: 'center', padding: 16 },
   actionMenuIcon: { marginRight: 16 },
   actionMenuItemText: { fontSize: 18, fontWeight: '600', color: colors.textPrimary },
+  chatFab: {
+    position: 'absolute',
+    bottom: 32,
+    right: 104, // Right next to the Add button
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: colors.accents.chat,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 8,
+  }
 });

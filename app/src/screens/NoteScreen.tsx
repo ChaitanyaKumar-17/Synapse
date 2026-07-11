@@ -141,14 +141,36 @@ export const NoteScreen = ({ navigation, route }: Props) => {
 
   const saveStateToSupabase = async (newTitle: string, newBlocks: NoteBlock[]) => {
     await supabase.from('notes').update({ title: newTitle.trim() || 'Untitled' }).eq('id', noteId);
+    
+    let textForEmbedding = '';
+    
     for (const block of newBlocks) {
       if (block.block_type === 'text') {
         await supabase.from('note_blocks').update({ text_content: block.text_content }).eq('id', block.id);
+        if (block.text_content) textForEmbedding += block.text_content + '\n';
       } else if (block.block_type === 'checklist' && block.checklist_items) {
         for (const item of block.checklist_items) {
           await supabase.from('checklist_items').update({ content: item.content, is_checked: item.is_checked }).eq('id', item.id);
+          if (item.content) textForEmbedding += `- [${item.is_checked ? 'x' : ' '}] ${item.content}\n`;
         }
       }
+    }
+
+    if (textForEmbedding.trim().length === 0) {
+      textForEmbedding = newTitle.trim() || 'Untitled';
+    }
+
+    if (textForEmbedding.trim().length > 0) {
+      // Call embed-note edge function via Supabase client to ensure auth headers are correct
+      // We don't await this so it happens in the background without blocking the UI
+      supabase.functions.invoke('embed-note', {
+        body: {
+          note_id: noteId,
+          notebook_id: notebookIdRef.current,
+          title: newTitle.trim() || 'Untitled',
+          text_content: textForEmbedding
+        }
+      }).catch(err => console.log('Background embedding error:', err));
     }
   };
 
@@ -646,7 +668,11 @@ export const NoteScreen = ({ navigation, route }: Props) => {
             <TouchableOpacity style={[styles.circleBtn, styles.circleBtnSmall]} onPress={handleRedo}>
               <Feather name="corner-up-right" size={20} color={colors.cardColors[3]} />
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.circleBtn, styles.circleBtnSmall]} onPress={() => navigation.goBack()}>
+            <TouchableOpacity style={[styles.circleBtn, styles.circleBtnSmall]} onPress={() => {
+              // Ensure we save the final state and trigger the embedding edge function silently
+              saveStateToSupabase(title, blocks);
+              navigation.goBack();
+            }}>
               <Feather name="check" size={20} color={colors.cardColors[2]} />
             </TouchableOpacity>
           </View>
