@@ -3,6 +3,9 @@ import { View, Text, StyleSheet, Modal, TouchableOpacity, TextInput, FlatList, K
 import { Feather } from '@expo/vector-icons';
 import { colors } from '../theme/colors';
 import { supabase } from '../lib/supabase';
+import { useNavigation } from '@react-navigation/native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { RootStackParamList } from '../navigation/RootNavigator';
 
 import { useAuthStore } from '../store/authStore';
 
@@ -19,22 +22,38 @@ type Props = {
   notebookId?: string; // If provided, limits RAG context to this notebook
 };
 
-export const ChatOverlay = ({ visible, onClose, notebookId }: Props) => {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+export const ChatOverlay: React.FC<Props> = ({ visible, onClose, notebookId }) => {
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const [chats, setChats] = useState<{notebook: ChatMessage[], global: ChatMessage[]}>({ notebook: [], global: [] });
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [scope, setScope] = useState<'notebook' | 'global'>(notebookId ? 'notebook' : 'global');
   const listRef = useRef<FlatList>(null);
+
+  // When notebookId changes, reset scope
+  useEffect(() => {
+    if (notebookId) {
+      setScope('notebook');
+    } else {
+      setScope('global');
+    }
+  }, [notebookId]);
 
   // Add initial greeting when opened
   useEffect(() => {
-    if (visible && messages.length === 0) {
-      setMessages([{
-        id: 'welcome',
-        role: 'assistant',
-        content: `Hi! I'm Synapse AI. Ask me anything about your ${notebookId ? 'notebook' : 'notes'}.`
-      }]);
+    if (visible) {
+      setChats(prev => {
+        const next = { ...prev };
+        if (notebookId && next.notebook.length === 0) {
+          next.notebook = [{ id: 'welcome-nb', role: 'assistant', content: "Hi! I'm Synapse AI. Ask me anything about this notebook." }];
+        }
+        if (next.global.length === 0) {
+          next.global = [{ id: 'welcome-gl', role: 'assistant', content: "Hi! I'm Synapse AI. Ask me anything about all your notes." }];
+        }
+        return next;
+      });
     }
-  }, [visible]);
+  }, [visible, notebookId]);
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -45,7 +64,10 @@ export const ChatOverlay = ({ visible, onClose, notebookId }: Props) => {
       content: input.trim()
     };
     
-    setMessages(prev => [...prev, userMessage]);
+    setChats(prev => ({
+      ...prev,
+      [scope]: [...prev[scope], userMessage]
+    }));
     setInput('');
     setLoading(true);
 
@@ -57,7 +79,8 @@ export const ChatOverlay = ({ visible, onClose, notebookId }: Props) => {
 
       // Extract previous messages to send as history
       // Only keep the most recent 10 to avoid payload bloat
-      const historyToSend = messages
+      const currentScopeMessages = chats[scope];
+      const historyToSend = currentScopeMessages
         .slice(-10)
         .map(m => ({ role: m.role, content: m.content }));
 
@@ -69,7 +92,7 @@ export const ChatOverlay = ({ visible, onClose, notebookId }: Props) => {
         },
         body: JSON.stringify({ 
           query: userMessage.content, 
-          notebook_id: notebookId,
+          notebook_id: scope === 'notebook' ? notebookId : null,
           history: historyToSend
         })
       });
@@ -95,13 +118,19 @@ export const ChatOverlay = ({ visible, onClose, notebookId }: Props) => {
         sources: data.sources
       };
       
-      setMessages(prev => [...prev, aiMessage]);
+      setChats(prev => ({
+        ...prev,
+        [scope]: [...prev[scope], aiMessage]
+      }));
     } catch (err: any) {
-      setMessages(prev => [...prev, {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: `Error: ${err.message}`
-      }]);
+      setChats(prev => ({
+        ...prev,
+        [scope]: [...prev[scope], {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: `Error: ${err.message}`
+        }]
+      }));
     } finally {
       setLoading(false);
       setTimeout(() => {
@@ -119,7 +148,15 @@ export const ChatOverlay = ({ visible, onClose, notebookId }: Props) => {
           <View style={styles.sourcesContainer}>
             <Text style={styles.sourcesLabel}>Sources:</Text>
             {item.sources.map(s => (
-              <Text key={s.id} style={styles.sourceItem}>• {s.title}</Text>
+              <TouchableOpacity 
+                key={s.id} 
+                onPress={() => {
+                  onClose();
+                  navigation.navigate('Note', { noteId: s.id });
+                }}
+              >
+                <Text style={styles.sourceItem}>• {s.title}</Text>
+              </TouchableOpacity>
             ))}
           </View>
         )}
@@ -137,6 +174,24 @@ export const ChatOverlay = ({ visible, onClose, notebookId }: Props) => {
           {/* Header */}
           <View style={styles.header}>
             <Text style={styles.headerTitle}>Synapse AI</Text>
+            
+            {notebookId && (
+              <View style={styles.toggleContainer}>
+                <TouchableOpacity 
+                  style={[styles.toggleBtn, scope === 'notebook' && styles.toggleBtnActive]}
+                  onPress={() => setScope('notebook')}
+                >
+                  <Text style={[styles.toggleText, scope === 'notebook' && styles.toggleTextActive]}>This Notebook</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[styles.toggleBtn, scope === 'global' && styles.toggleBtnActive]}
+                  onPress={() => setScope('global')}
+                >
+                  <Text style={[styles.toggleText, scope === 'global' && styles.toggleTextActive]}>All Notes</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
             <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
               <Feather name="x" size={24} color={colors.textPrimary} />
             </TouchableOpacity>
@@ -145,7 +200,7 @@ export const ChatOverlay = ({ visible, onClose, notebookId }: Props) => {
           {/* Chat List */}
           <FlatList
             ref={listRef}
-            data={messages}
+            data={chats[scope]}
             keyExtractor={item => item.id}
             renderItem={renderMessage}
             contentContainerStyle={styles.listContent}
@@ -210,6 +265,28 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     fontSize: 20,
     fontWeight: 'bold',
+  },
+  toggleContainer: {
+    flexDirection: 'row',
+    backgroundColor: colors.surface,
+    borderRadius: 8,
+    padding: 2,
+  },
+  toggleBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+  },
+  toggleBtnActive: {
+    backgroundColor: colors.surfaceLight,
+  },
+  toggleText: {
+    color: colors.textDisabled,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  toggleTextActive: {
+    color: colors.textPrimary,
   },
   closeBtn: {
     padding: 4,
