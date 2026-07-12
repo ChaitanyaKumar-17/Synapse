@@ -87,7 +87,7 @@ export const TodoListScreen = ({ navigation, route }: Props) => {
               }
             }}
           >
-            <Feather name="bell" size={24} color={reminderAt ? colors.accents.home : colors.textPrimary} />
+            <Feather name="bell" size={24} color={(reminderAt && new Date(reminderAt) > new Date()) ? colors.accents.home : colors.textPrimary} />
           </TouchableOpacity>
           <TouchableOpacity onPress={() => setImportModalVisible(true)}>
             <Feather name="file-plus" size={24} color={colors.textPrimary} />

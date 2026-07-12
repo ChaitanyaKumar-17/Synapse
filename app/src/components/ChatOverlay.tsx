@@ -24,7 +24,7 @@ type Props = {
 
 export const ChatOverlay: React.FC<Props> = ({ visible, onClose, notebookId }) => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const [chats, setChats] = useState<{notebook: ChatMessage[], global: ChatMessage[]}>({ notebook: [], global: [] });
+  const { chats, setChats } = useAuthStore();
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [scope, setScope] = useState<'notebook' | 'global'>(notebookId ? 'notebook' : 'global');

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, KeyboardAvoidingView, Platform, ActivityIndicator, Modal, useWindowDimensions, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, KeyboardAvoidingView, Platform, ActivityIndicator, Modal, useWindowDimensions, ScrollView, Alert } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation/RootNavigator';
 import { colors } from '../theme/colors';
@@ -12,6 +12,7 @@ import Animated, { useAnimatedRef } from 'react-native-reanimated';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ChatOverlay } from '../components/ChatOverlay';
 import { exportNotebook } from '../lib/exportNotebook';
+import { exportSingleItem } from '../lib/exportNote';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Home'>;
@@ -74,17 +75,30 @@ export const HomeScreen = ({ navigation }: Props) => {
 
   const [exportProgress, setExportProgress] = useState<string | null>(null);
 
-  const handleExportAll = async () => {
-    try {
-      setExportProgress('Starting export...');
-      await exportNotebook(user!.id, null, 'all_notes', (progress) => {
-        setExportProgress(progress);
-      });
-    } catch (err: any) {
-      setAlertConfig({ visible: true, title: 'Export Failed', message: err.message, isDestructive: false, confirmText: 'OK', onConfirm: () => setAlertConfig(prev => ({...prev, visible: false})) });
-    } finally {
-      setExportProgress(null);
-    }
+  const handleExportAll = () => {
+    Alert.alert('Export All Notes', 'Choose the export format:', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Markdown (.md)', onPress: async () => {
+        try {
+          setExportProgress('Starting export...');
+          await exportNotebook(user!.id, null, 'all_notes', 'md', (progress) => setExportProgress(progress));
+        } catch (err: any) {
+          setAlertConfig({ visible: true, title: 'Export Failed', message: err.message, isDestructive: false, confirmText: 'OK', onConfirm: () => setAlertConfig(prev => ({...prev, visible: false})) });
+        } finally {
+          setExportProgress(null);
+        }
+      }},
+      { text: 'PDF (.pdf)', onPress: async () => {
+        try {
+          setExportProgress('Starting export...');
+          await exportNotebook(user!.id, null, 'all_notes', 'pdf', (progress) => setExportProgress(progress));
+        } catch (err: any) {
+          setAlertConfig({ visible: true, title: 'Export Failed', message: err.message, isDestructive: false, confirmText: 'OK', onConfirm: () => setAlertConfig(prev => ({...prev, visible: false})) });
+        } finally {
+          setExportProgress(null);
+        }
+      }}
+    ]);
   };
 
   const fetchData = async () => {
@@ -565,35 +579,33 @@ export const HomeScreen = ({ navigation }: Props) => {
                 const item = actionMenu.item;
                 setActionMenu({ visible: false, item: null });
                 if (item) {
-                  setTimeout(async () => {
-                    setExportProgress('Starting export...');
-                    try {
-                      let md = `# ${item.name}\n\n`;
-                      
-                      if (item.type === 'note') {
-                        const { data: blocks } = await supabase.from('note_blocks').select('*').eq('note_id', item.id).order('order_index');
-                        (blocks || []).forEach(b => { if (b.block_type === 'text') md += `${b.text_content || ''}\n\n`; });
-                      } else if (item.type === 'todo_list') {
-                        const { data: todos } = await supabase.from('todos').select('*').eq('todo_list_id', item.id).order('order_index');
-                        (todos || []).forEach(t => { md += `- [${t.is_completed ? 'x' : ' '}] ${t.content}\n`; });
-                      }
-                      
-                      const safeName = item.name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-                      const FileSystem = require('expo-file-system/legacy');
-                      const Sharing = require('expo-sharing');
-                      const fileUri = `${FileSystem.cacheDirectory}${safeName}.md`;
-                      await FileSystem.writeAsStringAsync(fileUri, md);
-                      await Sharing.shareAsync(fileUri);
-                    } catch (e: any) {
-                      setAlertConfig({ visible: true, title: 'Export Failed', message: e.message, isDestructive: false, confirmText: 'OK', onConfirm: () => setAlertConfig(prev => ({...prev, visible: false})) });
-                    } finally {
-                      setExportProgress(null);
-                    }
-                  }, 350);
+                  Alert.alert('Export Format', 'Choose the export format:', [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Markdown (.md)', onPress: async () => {
+                        setExportProgress('Starting export...');
+                        try {
+                          await exportSingleItem(item as any, 'md', setExportProgress);
+                        } catch (e: any) {
+                          setAlertConfig({ visible: true, title: 'Export Failed', message: e.message, isDestructive: false, confirmText: 'OK', onConfirm: () => {} });
+                        } finally {
+                          setExportProgress(null);
+                        }
+                    }},
+                    { text: 'PDF (.pdf)', onPress: async () => {
+                        setExportProgress('Starting export...');
+                        try {
+                          await exportSingleItem(item as any, 'pdf', setExportProgress);
+                        } catch (e: any) {
+                          setAlertConfig({ visible: true, title: 'Export Failed', message: e.message, isDestructive: false, confirmText: 'OK', onConfirm: () => {} });
+                        } finally {
+                          setExportProgress(null);
+                        }
+                    }}
+                  ]);
                 }
               }}>
                 <Feather name="download" size={20} color={colors.textPrimary} style={styles.actionMenuIcon} />
-                <Text style={styles.actionMenuItemText}>Export {actionMenu.item?.type === 'note' ? 'Note' : 'List'} (.md)</Text>
+                <Text style={styles.actionMenuItemText}>Export {actionMenu.item?.type === 'note' ? 'Note' : 'List'}</Text>
               </TouchableOpacity>
             )}
 

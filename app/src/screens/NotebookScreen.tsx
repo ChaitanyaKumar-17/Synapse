@@ -12,6 +12,7 @@ import { useAuthStore } from '../store/authStore';
 import { CustomAlert } from '../components/CustomAlert';
 import { ChatOverlay } from '../components/ChatOverlay';
 import { exportNotebook } from '../lib/exportNotebook';
+import { exportSingleItem } from '../lib/exportNote';
 import * as FileSystem from 'expo-file-system/legacy';
 import { decode } from 'base64-arraybuffer';
 
@@ -119,17 +120,30 @@ export const NotebookScreen = ({ navigation, route }: Props) => {
 
   const [exportProgress, setExportProgress] = useState<string | null>(null);
 
-  const handleExport = async () => {
-    try {
-      setExportProgress('Starting export...');
-      await exportNotebook(user!.id, notebookId || null, name || 'global', (progress) => {
-        setExportProgress(progress);
-      });
-    } catch (err: any) {
-      setAlertConfig({ visible: true, title: 'Export Failed', message: err.message, isDestructive: false, confirmText: 'OK', onConfirm: () => setAlertConfig(prev => ({...prev, visible: false})) });
-    } finally {
-      setExportProgress(null);
-    }
+  const handleExport = () => {
+    Alert.alert('Export Folder', 'Choose the export format:', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Markdown (.md)', onPress: async () => {
+        try {
+          setExportProgress('Starting export...');
+          await exportNotebook(user!.id, notebookId || null, name || 'global', 'md', (progress) => setExportProgress(progress));
+        } catch (err: any) {
+          setAlertConfig({ visible: true, title: 'Export Failed', message: err.message, isDestructive: false, confirmText: 'OK', onConfirm: () => setAlertConfig(prev => ({...prev, visible: false})) });
+        } finally {
+          setExportProgress(null);
+        }
+      }},
+      { text: 'PDF (.pdf)', onPress: async () => {
+        try {
+          setExportProgress('Starting export...');
+          await exportNotebook(user!.id, notebookId || null, name || 'global', 'pdf', (progress) => setExportProgress(progress));
+        } catch (err: any) {
+          setAlertConfig({ visible: true, title: 'Export Failed', message: err.message, isDestructive: false, confirmText: 'OK', onConfirm: () => setAlertConfig(prev => ({...prev, visible: false})) });
+        } finally {
+          setExportProgress(null);
+        }
+      }}
+    ]);
   };
 
   useEffect(() => {
@@ -531,27 +545,33 @@ export const NotebookScreen = ({ navigation, route }: Props) => {
                 const item = actionMenu.item;
                 setActionMenu({ visible: false, item: null });
                 if (item) {
-                  setTimeout(async () => {
-                    setExportProgress('Starting export...');
-                    try {
-                      const { data: blocks } = await supabase.from('note_blocks').select('*').eq('note_id', item.id).order('order_index');
-                      let md = `# ${item.name}\n\n`;
-                      (blocks || []).forEach(b => { if (b.block_type === 'text') md += `${b.text_content || ''}\n\n`; });
-                      
-                      const safeName = item.name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-                      const fileUri = `${FileSystem.cacheDirectory}${safeName}.md`;
-                      await FileSystem.writeAsStringAsync(fileUri, md);
-                      await Sharing.shareAsync(fileUri);
-                    } catch (e: any) {
-                      setAlertConfig({ visible: true, title: 'Export Failed', message: e.message, isDestructive: false, confirmText: 'OK', onConfirm: () => setAlertConfig(prev => ({...prev, visible: false})) });
-                    } finally {
-                      setExportProgress(null);
-                    }
-                  }, 350);
+                  Alert.alert('Export Format', 'Choose the export format:', [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Markdown (.md)', onPress: async () => {
+                        setExportProgress('Starting export...');
+                        try {
+                          await exportSingleItem(item as any, 'md', setExportProgress);
+                        } catch (e: any) {
+                          setAlertConfig({ visible: true, title: 'Export Failed', message: e.message, isDestructive: false, confirmText: 'OK', onConfirm: () => {} });
+                        } finally {
+                          setExportProgress(null);
+                        }
+                    }},
+                    { text: 'PDF (.pdf)', onPress: async () => {
+                        setExportProgress('Starting export...');
+                        try {
+                          await exportSingleItem(item as any, 'pdf', setExportProgress);
+                        } catch (e: any) {
+                          setAlertConfig({ visible: true, title: 'Export Failed', message: e.message, isDestructive: false, confirmText: 'OK', onConfirm: () => {} });
+                        } finally {
+                          setExportProgress(null);
+                        }
+                    }}
+                  ]);
                 }
               }}>
                 <Feather name="download" size={20} color={colors.textPrimary} style={styles.actionMenuIcon} />
-                <Text style={styles.actionMenuItemText}>Export Note (.md)</Text>
+                <Text style={styles.actionMenuItemText}>Export Note</Text>
               </TouchableOpacity>
             )}
 

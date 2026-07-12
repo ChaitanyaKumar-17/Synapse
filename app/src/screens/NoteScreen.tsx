@@ -677,7 +677,7 @@ export const NoteScreen = ({ navigation, route }: Props) => {
                 setShowDatePicker(true);
               }
             }}>
-              <Feather name="bell" size={20} color={reminderAt ? colors.accents.home : "#FFF"} />
+              <Feather name="bell" size={20} color={(reminderAt && new Date(reminderAt) > new Date()) ? colors.accents.home : "#FFF"} />
             </TouchableOpacity>
             <TouchableOpacity style={[styles.circleBtn, styles.circleBtnSmall]} onPress={handleUndo}>
               <Feather name="corner-up-left" size={20} color={colors.cardColors[4]} />

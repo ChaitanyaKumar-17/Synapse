@@ -3,11 +3,14 @@ import * as Sharing from 'expo-sharing';
 import JSZip from 'jszip';
 import { supabase } from './supabase';
 import { Platform } from 'react-native';
+import * as Print from 'expo-print';
+import { marked } from 'marked';
 
 export const exportNotebook = async (
   userId: string,
   rootNotebookId: string | null,
   rootNotebookName: string,
+  format: 'md' | 'pdf' = 'md',
   onProgress?: (progress: string) => void
 ) => {
   try {
@@ -100,8 +103,34 @@ export const exportNotebook = async (
         }
       }
 
-      // Attachments
       const noteAttachments = (allAttachments || []).filter(a => a.note_id === note.id);
+
+      // Check if there is any real text content
+      const hasTextContent = blocks.some(b => {
+        if (b.block_type === 'text' && b.text_content?.trim()) return true;
+        if (b.block_type === 'checklist') {
+          const items = (allChecklists || []).filter(c => c.block_id === b.id);
+          if (items.some(i => i.content?.trim())) return true;
+        }
+        return false;
+      });
+
+      if (!hasTextContent && noteAttachments.length > 0) {
+        // Pure attachment note -> export attachments directly to folder, skip MD/PDF
+        for (const att of noteAttachments) {
+          onProgress?.(`Downloading attachment: ${att.file_name}`);
+          const { data: signedData, error: signError } = await supabase.storage.from('attachments').createSignedUrl(att.storage_path, 60);
+          if (signedData?.signedUrl && !signError) {
+            const tempUri = `${FileSystem.cacheDirectory}temp_${Date.now()}_${att.file_name}`;
+            await FileSystem.downloadAsync(signedData.signedUrl, tempUri);
+            const base64 = await FileSystem.readAsStringAsync(tempUri, { encoding: 'base64' });
+            zip.file(`${folderPath}${att.file_name}`, base64, { base64: true });
+          }
+        }
+        continue; 
+      }
+
+      // Process Attachments for MD/PDF
       for (const att of noteAttachments) {
         onProgress?.(`Downloading attachment: ${att.file_name}`);
         const { data: signedData, error: signError } = await supabase.storage.from('attachments').createSignedUrl(att.storage_path, 60);
@@ -111,16 +140,42 @@ export const exportNotebook = async (
           await FileSystem.downloadAsync(signedData.signedUrl, tempUri);
           const base64 = await FileSystem.readAsStringAsync(tempUri, { encoding: 'base64' });
           
-          const attFolderPath = `${folderPath}attachments/`;
-          zip.file(`${attFolderPath}${att.file_name}`, base64, { base64: true });
-          md += `\n![${att.file_name}](./attachments/${att.file_name})\n`;
+          if (format === 'pdf') {
+             // Inline base64 for HTML/PDF rendering
+             md += `\n<img src="data:image/jpeg;base64,${base64}" style="max-width: 100%; border-radius: 8px;" />\n`;
+          } else {
+             const attFolderPath = `${folderPath}attachments/`;
+             zip.file(`${attFolderPath}${att.file_name}`, base64, { base64: true });
+             md += `\n![${att.file_name}](./attachments/${att.file_name})\n`;
+          }
           attachmentCount++;
         }
       }
 
-      // Add MD to zip
       const safeTitle = note.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-      zip.file(`${folderPath}${safeTitle}_${note.id.substring(0,6)}.md`, md);
+      
+      if (format === 'pdf') {
+        const htmlContent = `
+          <html>
+            <head>
+              <style>
+                body { font-family: -apple-system, system-ui, sans-serif; padding: 20px; line-height: 1.6; color: #111; }
+                h1, h2, h3 { color: #000; }
+                img { max-width: 100%; border-radius: 8px; margin-top: 16px; }
+                ul { margin-left: 20px; }
+              </style>
+            </head>
+            <body>
+              ${await marked.parse(md)}
+            </body>
+          </html>
+        `;
+        const { uri } = await Print.printToFileAsync({ html: htmlContent });
+        const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+        zip.file(`${folderPath}${safeTitle}_${note.id.substring(0,6)}.pdf`, base64, { base64: true });
+      } else {
+        zip.file(`${folderPath}${safeTitle}_${note.id.substring(0,6)}.md`, md);
+      }
     }
 
     onProgress?.('Generating ZIP file...');
