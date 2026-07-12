@@ -1,5 +1,5 @@
 import React from 'react';
-import { Modal, View, Text, TouchableOpacity, StyleSheet, Platform } from 'react-native';
+import { Modal, View, Text, TouchableOpacity, StyleSheet, Platform, TextInput } from 'react-native';
 import { colors } from '../theme/colors';
 
 export type CustomAlertProps = {
@@ -9,8 +9,12 @@ export type CustomAlertProps = {
   confirmText?: string;
   cancelText?: string;
   isDestructive?: boolean;
-  onConfirm: () => void;
+  onConfirm: (inputValue?: string) => void;
   onCancel: () => void;
+  showInput?: boolean;
+  inputPlaceholder?: string;
+  inputValue?: string;
+  onInputChange?: (text: string) => void;
 };
 
 export const CustomAlert = ({
@@ -21,7 +25,11 @@ export const CustomAlert = ({
   cancelText = 'Cancel',
   isDestructive = false,
   onConfirm,
-  onCancel
+  onCancel,
+  showInput = false,
+  inputPlaceholder = 'Enter text...',
+  inputValue = '',
+  onInputChange
 }: CustomAlertProps) => {
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
@@ -29,6 +37,16 @@ export const CustomAlert = ({
         <View style={styles.alertBox}>
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.message}>{message}</Text>
+          {showInput && (
+            <TextInput
+              style={styles.input}
+              placeholder={inputPlaceholder}
+              placeholderTextColor={colors.textDisabled}
+              value={inputValue}
+              onChangeText={onInputChange}
+              autoFocus
+            />
+          )}
           <View style={styles.actions}>
             <TouchableOpacity style={styles.btn} onPress={onCancel}>
               <Text style={styles.cancelText}>{cancelText}</Text>
@@ -36,7 +54,7 @@ export const CustomAlert = ({
             <TouchableOpacity 
               style={[styles.btn, styles.confirmBtn, isDestructive && styles.destructiveBtn]} 
               onPress={() => {
-                onConfirm();
+                onConfirm(inputValue);
                 onCancel(); // Auto close on confirm
               }}
             >
@@ -79,6 +97,14 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     marginBottom: 24,
     lineHeight: 24,
+  },
+  input: {
+    backgroundColor: colors.background,
+    color: colors.textPrimary,
+    borderRadius: 12,
+    padding: 16,
+    fontSize: 16,
+    marginBottom: 24,
   },
   actions: {
     flexDirection: 'row',

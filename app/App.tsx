@@ -27,7 +27,7 @@ export default function App() {
 
   useEffect(() => {
     // Clear stale auth hash from URL on Web to prevent Supabase 403s on reload
-    if (typeof window !== 'undefined' && window.location.hash.includes('access_token')) {
+    if (typeof window !== 'undefined' && window.location && window.location.hash && window.location.hash.includes('access_token')) {
       window.history.replaceState(null, '', window.location.pathname);
     }
 

@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "app",
+    "name": "Synapse",
     "slug": "app",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -11,12 +11,11 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#0E0E10",
+        "foregroundImage": "./assets/adaptive-icon.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.chaitanya0817.synapse"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -24,6 +23,12 @@
     "plugins": [
       "expo-sharing",
       "@react-native-community/datetimepicker"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "c7abfac5-1f64-4dc3-9889-3a79bedb83d3"
+      }
+    },
+    "owner": "chaitanya0817"
   }
 }

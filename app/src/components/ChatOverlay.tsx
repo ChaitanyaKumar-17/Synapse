@@ -165,10 +165,10 @@ export const ChatOverlay: React.FC<Props> = ({ visible, onClose, notebookId }) =
   };
 
   return (
-    <Modal visible={visible} animationType="slide" transparent={true}>
+    <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
       <KeyboardAvoidingView 
         style={styles.modalContainer} 
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <View style={styles.chatWrapper}>
           {/* Header */}

@@ -12,6 +12,7 @@ import { Feather } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
+import { decode } from 'base64-arraybuffer';
 import * as Sharing from 'expo-sharing';
 import * as IntentLauncher from 'expo-intent-launcher';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -69,9 +70,10 @@ export const NoteScreen = ({ navigation, route }: Props) => {
   const [noteColor, setNoteColor] = useState<string | null>(null);
   const notebookIdRef = useRef<string | null>(null);
 
-  const [alertConfig, setAlertConfig] = useState({
+  const [alertConfig, setAlertConfig] = useState<any>({
     visible: false, title: '', message: '', isDestructive: false, confirmText: 'OK', onConfirm: () => {}
   });
+  const [reminderMsg, setReminderMsg] = useState('You have a scheduled reminder!');
 
   const [reminderAt, setReminderAt] = useState<Date | null>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -103,11 +105,12 @@ export const NoteScreen = ({ navigation, route }: Props) => {
 
   const panResponder = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_, gestureState) => Math.abs(gestureState.dy) > 10,
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_, gestureState) => Math.abs(gestureState.dy) > 5,
       onPanResponderRelease: (_, gestureState) => {
-        if (gestureState.dy < -30) {
+        if (gestureState.dy < -20) {
           handlersRef.current.expand();
-        } else if (gestureState.dy > 30) {
+        } else if (gestureState.dy > 20) {
           handlersRef.current.collapse();
         }
       }
@@ -513,10 +516,11 @@ export const NoteScreen = ({ navigation, route }: Props) => {
       const ext = fileName.split('.').pop() || (type === 'image' ? 'jpg' : 'bin');
       const storagePath = `${user?.id}/${noteId}/${Date.now()}.${ext}`;
       
-      const response = await fetch(uri);
-      const blob = await response.blob();
+      const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
       
-      const { error: uploadError } = await supabase.storage.from('attachments').upload(storagePath, blob);
+      const { error: uploadError } = await supabase.storage.from('attachments').upload(storagePath, decode(base64), { 
+        contentType: type === 'image' ? `image/${ext}` : 'application/octet-stream' 
+      });
       if (uploadError) throw uploadError;
       
       const { data: dbData, error: dbError } = await supabase.from('attachments').insert({
@@ -623,7 +627,20 @@ export const NoteScreen = ({ navigation, route }: Props) => {
     if (selectedDate && event.type === 'set') {
       setReminderAt(selectedDate);
       await supabase.from('notes').update({ reminder_at: selectedDate.toISOString() }).eq('id', noteId);
-      await scheduleReminder(title || 'Note Reminder', 'You have a scheduled reminder!', selectedDate, noteId, 'note');
+      
+      setAlertConfig({
+        visible: true,
+        title: 'Reminder Message',
+        message: 'What would you like the notification to say?',
+        showInput: true,
+        inputValue: 'You have a scheduled reminder!',
+        inputPlaceholder: 'e.g. Call John',
+        onInputChange: (text: string) => setAlertConfig((prev: any) => ({ ...prev, inputValue: text })),
+        confirmText: 'Set Reminder',
+        onConfirm: async (msg?: string) => {
+          await scheduleReminder(title || 'Note Reminder', msg || 'You have a scheduled reminder!', selectedDate, noteId, 'note');
+        }
+      });
     }
   };
 

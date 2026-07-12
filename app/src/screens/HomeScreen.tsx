@@ -6,11 +6,12 @@ import { colors } from '../theme/colors';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/authStore';
 import { CustomAlert } from '../components/CustomAlert';
-import { Feather } from '@expo/vector-icons';
+import { Feather, Ionicons } from '@expo/vector-icons';
 import Sortable from 'react-native-sortables';
 import Animated, { useAnimatedRef } from 'react-native-reanimated';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ChatOverlay } from '../components/ChatOverlay';
+import { exportNotebook } from '../lib/exportNotebook';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Home'>;
@@ -70,6 +71,21 @@ export const HomeScreen = ({ navigation }: Props) => {
   const [alertConfig, setAlertConfig] = useState({
     visible: false, title: '', message: '', isDestructive: false, confirmText: 'OK', onConfirm: () => {}
   });
+
+  const [exportProgress, setExportProgress] = useState<string | null>(null);
+
+  const handleExportAll = async () => {
+    try {
+      setExportProgress('Starting export...');
+      await exportNotebook(user!.id, null, 'all_notes', (progress) => {
+        setExportProgress(progress);
+      });
+    } catch (err: any) {
+      setAlertConfig({ visible: true, title: 'Export Failed', message: err.message, isDestructive: false, confirmText: 'OK', onConfirm: () => setAlertConfig(prev => ({...prev, visible: false})) });
+    } finally {
+      setExportProgress(null);
+    }
+  };
 
   const fetchData = async () => {
     const { data: nbData } = await supabase.from('notebooks').select('id, name, created_at, is_pinned, parent_notebook_id, pinned_at').order('created_at', { ascending: true });
@@ -283,7 +299,7 @@ export const HomeScreen = ({ navigation }: Props) => {
       if (item.type === 'folder') {
         return (
           <View key={item.id} style={[styles.folderSquareItem, { width: halfWidth, height: halfWidth }]}>
-            <Text style={styles.folderSquareIcon}>📁</Text>
+            <Ionicons name="folder" size={64} color="#FFCA28" style={{ marginBottom: 12 }} />
             <View style={styles.editContainer}>
               <TextInput
                 style={styles.folderEditInput}
@@ -326,7 +342,7 @@ export const HomeScreen = ({ navigation }: Props) => {
           }}
           onLongPress={() => setActionMenu({ visible: true, item })}
         >
-          <Text style={styles.folderSquareIcon}>{isFolder ? '📁' : '🗒️'}</Text>
+          <Ionicons name={isFolder ? "folder" : "list-circle"} size={64} color={isFolder ? "#FFCA28" : "#4FC3F7"} style={{ marginBottom: 12 }} />
           <Text style={styles.folderSquareTitle} numberOfLines={2}>{item.name}</Text>
           {item.is_pinned && activeTab !== 'Home' && <Feather name="anchor" size={14} color="rgba(255,255,255,0.5)" style={{ marginTop: 4 }} />}
         </TouchableOpacity>
@@ -370,18 +386,20 @@ export const HomeScreen = ({ navigation }: Props) => {
       <View style={styles.header}>
         <View style={styles.headerTop}>
           <Text style={styles.title}>My{'\n'}Notes</Text>
-          <TouchableOpacity 
-            onPress={() => {
-              setAlertConfig({
-                visible: true, title: 'Sign Out', message: 'Are you sure you want to sign out?', isDestructive: true, confirmText: 'Sign Out',
-                onConfirm: () => supabase.auth.signOut()
-              });
-            }} 
-            style={styles.profileBtn}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.profileInitials}>{username.substring(0, 2).toUpperCase()}</Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <TouchableOpacity 
+              onPress={() => {
+                setAlertConfig({
+                  visible: true, title: 'Sign Out', message: 'Are you sure you want to sign out?', isDestructive: true, confirmText: 'Sign Out',
+                  onConfirm: () => supabase.auth.signOut()
+                });
+              }} 
+              style={styles.profileBtn}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.profileInitials}>{username.substring(0, 2).toUpperCase()}</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         <View style={styles.pillsContainer}>
@@ -484,7 +502,7 @@ export const HomeScreen = ({ navigation }: Props) => {
 
       {/* Floating Action Button */}
       <TouchableOpacity style={styles.fab} onPress={() => setModalVisible(true)} activeOpacity={0.8}>
-        <Text style={styles.fabText}>+</Text>
+        <Feather name="plus" size={32} color={colors.background} />
       </TouchableOpacity>
 
       {/* Creation Modal */}
@@ -542,6 +560,43 @@ export const HomeScreen = ({ navigation }: Props) => {
               <Text style={styles.actionMenuItemText}>{actionMenu.item?.is_pinned ? 'Unpin from Home' : 'Pin to Home'}</Text>
             </TouchableOpacity>
 
+            {(actionMenu.item?.type === 'note' || actionMenu.item?.type === 'todo_list') && (
+              <TouchableOpacity style={styles.actionMenuItem} onPress={() => {
+                const item = actionMenu.item;
+                setActionMenu({ visible: false, item: null });
+                if (item) {
+                  setTimeout(async () => {
+                    setExportProgress('Starting export...');
+                    try {
+                      let md = `# ${item.name}\n\n`;
+                      
+                      if (item.type === 'note') {
+                        const { data: blocks } = await supabase.from('note_blocks').select('*').eq('note_id', item.id).order('order_index');
+                        (blocks || []).forEach(b => { if (b.block_type === 'text') md += `${b.text_content || ''}\n\n`; });
+                      } else if (item.type === 'todo_list') {
+                        const { data: todos } = await supabase.from('todos').select('*').eq('todo_list_id', item.id).order('order_index');
+                        (todos || []).forEach(t => { md += `- [${t.is_completed ? 'x' : ' '}] ${t.content}\n`; });
+                      }
+                      
+                      const safeName = item.name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+                      const FileSystem = require('expo-file-system/legacy');
+                      const Sharing = require('expo-sharing');
+                      const fileUri = `${FileSystem.cacheDirectory}${safeName}.md`;
+                      await FileSystem.writeAsStringAsync(fileUri, md);
+                      await Sharing.shareAsync(fileUri);
+                    } catch (e: any) {
+                      setAlertConfig({ visible: true, title: 'Export Failed', message: e.message, isDestructive: false, confirmText: 'OK', onConfirm: () => setAlertConfig(prev => ({...prev, visible: false})) });
+                    } finally {
+                      setExportProgress(null);
+                    }
+                  }, 350);
+                }
+              }}>
+                <Feather name="download" size={20} color={colors.textPrimary} style={styles.actionMenuIcon} />
+                <Text style={styles.actionMenuItemText}>Export {actionMenu.item?.type === 'note' ? 'Note' : 'List'} (.md)</Text>
+              </TouchableOpacity>
+            )}
+
             <TouchableOpacity style={styles.actionMenuItem} onPress={() => {
               const item = actionMenu.item;
               setActionMenu({ visible: false, item: null });
@@ -566,6 +621,25 @@ export const HomeScreen = ({ navigation }: Props) => {
       >
         <Feather name="message-circle" size={28} color="#050505" />
       </TouchableOpacity>
+      
+      <TouchableOpacity 
+        style={styles.downloadFab}
+        activeOpacity={0.8}
+        onPress={handleExportAll}
+      >
+        <Feather name="download" size={24} color={colors.textPrimary} />
+      </TouchableOpacity>
+
+      {/* Export Progress Modal */}
+      <Modal visible={!!exportProgress} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <ActivityIndicator size="large" color={colors.textPrimary} style={{ marginBottom: 16 }} />
+            <Text style={styles.modalTitle}>Exporting All Notes</Text>
+            <Text style={{ color: colors.textSecondary, fontSize: 16, textAlign: 'center' }}>{exportProgress}</Text>
+          </View>
+        </View>
+      </Modal>
 
       <ChatOverlay visible={isChatVisible} onClose={() => setChatVisible(false)} />
     </View>
@@ -718,10 +792,10 @@ const styles = StyleSheet.create({
   fab: {
     position: 'absolute',
     bottom: 32,
-    right: 32,
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+    right: 24,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     backgroundColor: colors.textPrimary,
     justifyContent: 'center',
     alignItems: 'center',
@@ -731,7 +805,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     elevation: 8,
   },
-  fabText: { fontSize: 32, color: colors.background, fontWeight: '300', marginTop: -4 },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', padding: 24 },
   modalContainer: { backgroundColor: colors.surface, padding: 24, borderRadius: 32 },
@@ -751,11 +824,27 @@ const styles = StyleSheet.create({
   chatFab: {
     position: 'absolute',
     bottom: 32,
-    right: 104, // Right next to the Add button
+    right: 112, // Right next to the Add button
     width: 64,
     height: 64,
     borderRadius: 32,
     backgroundColor: colors.accents.chat,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  downloadFab: {
+    position: 'absolute',
+    bottom: 112,
+    right: 24,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.surfaceLight,
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000',

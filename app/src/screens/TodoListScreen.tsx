@@ -38,7 +38,7 @@ export const TodoListScreen = ({ navigation, route }: Props) => {
   const [importModalVisible, setImportModalVisible] = useState(false);
   const [notesWithLists, setNotesWithLists] = useState<any[]>([]);
   
-  const [alertConfig, setAlertConfig] = useState({
+  const [alertConfig, setAlertConfig] = useState<any>({
     visible: false, title: '', message: '', isDestructive: false, confirmText: 'OK', onConfirm: () => {}
   });
 
@@ -188,7 +188,20 @@ export const TodoListScreen = ({ navigation, route }: Props) => {
     if (selectedDate && event.type === 'set') {
       setReminderAt(selectedDate);
       await supabase.from('todo_lists').update({ reminder_at: selectedDate.toISOString() }).eq('id', listId);
-      await scheduleReminder(title || 'To-do List Reminder', 'You have a scheduled reminder!', selectedDate, listId, 'todo_list');
+      
+      setAlertConfig({
+        visible: true,
+        title: 'Reminder Message',
+        message: 'What would you like the notification to say?',
+        showInput: true,
+        inputValue: 'You have a scheduled reminder!',
+        inputPlaceholder: 'e.g. Call John',
+        onInputChange: (text: string) => setAlertConfig((prev: any) => ({ ...prev, inputValue: text })),
+        confirmText: 'Set Reminder',
+        onConfirm: async (msg?: string) => {
+          await scheduleReminder(title || 'To-do List Reminder', msg || 'You have a scheduled reminder!', selectedDate, listId, 'todo_list');
+        }
+      });
     }
   };
 

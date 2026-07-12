@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, TextInput, KeyboardAvoidingView, Platform, ActivityIndicator, Modal, ScrollView, Animated } from 'react-native';
-import { Feather } from '@expo/vector-icons';
+import { Feather, Ionicons } from '@expo/vector-icons';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
@@ -11,6 +11,9 @@ import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/authStore';
 import { CustomAlert } from '../components/CustomAlert';
 import { ChatOverlay } from '../components/ChatOverlay';
+import { exportNotebook } from '../lib/exportNotebook';
+import * as FileSystem from 'expo-file-system/legacy';
+import { decode } from 'base64-arraybuffer';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Notebook'>;
@@ -114,18 +117,38 @@ export const NotebookScreen = ({ navigation, route }: Props) => {
     return rows;
   }, [items, sortConfig, searchQuery, selectedTagIds, noteTagMap]);
 
+  const [exportProgress, setExportProgress] = useState<string | null>(null);
+
+  const handleExport = async () => {
+    try {
+      setExportProgress('Starting export...');
+      await exportNotebook(user!.id, notebookId || null, name || 'global', (progress) => {
+        setExportProgress(progress);
+      });
+    } catch (err: any) {
+      setAlertConfig({ visible: true, title: 'Export Failed', message: err.message, isDestructive: false, confirmText: 'OK', onConfirm: () => setAlertConfig(prev => ({...prev, visible: false})) });
+    } finally {
+      setExportProgress(null);
+    }
+  };
+
   useEffect(() => {
     navigation.setOptions({ 
       title: name || 'Folder',
       headerStyle: { backgroundColor: colors.background },
       headerTintColor: colors.textPrimary,
       headerShadowVisible: false,
+      headerRight: () => (
+        <TouchableOpacity onPress={handleExport} style={{ padding: 8 }}>
+          <Feather name="download" size={22} color={colors.textSecondary} />
+        </TouchableOpacity>
+      )
     });
     const unsubscribe = navigation.addListener('focus', () => {
       fetchData();
     });
     return unsubscribe;
-  }, [navigation, notebookId, name]);
+  }, [navigation, notebookId, name, user]);
 
   const fetchData = async () => {
     const { data: nbData, error: nbError } = await supabase
@@ -244,10 +267,11 @@ export const NotebookScreen = ({ navigation, route }: Props) => {
         const ext = fileName.split('.').pop() || (type === 'image' ? 'jpg' : 'bin');
         const storagePath = `${user?.id}/${note.id}/${Date.now()}.${ext}`;
         
-        const response = await fetch(asset.uri);
-        const blob = await response.blob();
+        const base64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'base64' });
         
-        const { error: uploadError } = await supabase.storage.from('attachments').upload(storagePath, blob);
+        const { error: uploadError } = await supabase.storage.from('attachments').upload(storagePath, decode(base64), { 
+          contentType: type === 'image' ? `image/${ext}` : 'application/octet-stream' 
+        });
         if (uploadError) throw uploadError;
         
         await supabase.from('attachments').insert({
@@ -332,7 +356,7 @@ export const NotebookScreen = ({ navigation, route }: Props) => {
                         onPress={() => navigation.push('Notebook', { notebookId: item.id, name: item.name })}
                         onLongPress={() => setActionMenu({ visible: true, item })}
                       >
-                        <Text style={styles.folderSquareIcon}>📁</Text>
+                        <Ionicons name="folder" size={64} color="#FFCA28" style={{ marginBottom: 12 }} />
                         {editingId === item.id ? (
                           <TextInput
                             style={styles.folderEditInput}
@@ -391,6 +415,17 @@ export const NotebookScreen = ({ navigation, route }: Props) => {
         </View>
       )}
 
+      {/* Export Progress Modal */}
+      <Modal visible={!!exportProgress} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <ActivityIndicator size="large" color={colors.textPrimary} style={{ marginBottom: 16 }} />
+            <Text style={styles.modalTitle}>Exporting Notebook</Text>
+            <Text style={{ color: colors.textSecondary, fontSize: 16, textAlign: 'center' }}>{exportProgress}</Text>
+          </View>
+        </View>
+      </Modal>
+
       {/* Floating Action Buttons */}
       <View style={styles.fabContainer}>
         <Animated.View style={[styles.fabMenu, { 
@@ -415,7 +450,7 @@ export const NotebookScreen = ({ navigation, route }: Props) => {
           <TouchableOpacity style={styles.fabActionBtn} onPress={() => { toggleFab(); setModalConfig({ visible: true, type: 'notebook' }); }} activeOpacity={0.8}>
             <Text style={styles.fabActionLabel}>Folder</Text>
             <View style={[styles.fab, { backgroundColor: colors.surfaceLight }]}>
-              <Text style={styles.fabIcon}>📁</Text>
+              <Feather name="folder" size={24} color={colors.textPrimary} />
             </View>
           </TouchableOpacity>
 
@@ -490,6 +525,35 @@ export const NotebookScreen = ({ navigation, route }: Props) => {
               <Feather name="anchor" size={20} color={colors.textPrimary} style={styles.actionMenuIcon} />
               <Text style={styles.actionMenuItemText}>{actionMenu.item?.is_pinned ? 'Unpin from Home' : 'Pin to Home'}</Text>
             </TouchableOpacity>
+
+            {actionMenu.item?.type === 'note' && (
+              <TouchableOpacity style={styles.actionMenuItem} onPress={() => {
+                const item = actionMenu.item;
+                setActionMenu({ visible: false, item: null });
+                if (item) {
+                  setTimeout(async () => {
+                    setExportProgress('Starting export...');
+                    try {
+                      const { data: blocks } = await supabase.from('note_blocks').select('*').eq('note_id', item.id).order('order_index');
+                      let md = `# ${item.name}\n\n`;
+                      (blocks || []).forEach(b => { if (b.block_type === 'text') md += `${b.text_content || ''}\n\n`; });
+                      
+                      const safeName = item.name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+                      const fileUri = `${FileSystem.cacheDirectory}${safeName}.md`;
+                      await FileSystem.writeAsStringAsync(fileUri, md);
+                      await Sharing.shareAsync(fileUri);
+                    } catch (e: any) {
+                      setAlertConfig({ visible: true, title: 'Export Failed', message: e.message, isDestructive: false, confirmText: 'OK', onConfirm: () => setAlertConfig(prev => ({...prev, visible: false})) });
+                    } finally {
+                      setExportProgress(null);
+                    }
+                  }, 350);
+                }
+              }}>
+                <Feather name="download" size={20} color={colors.textPrimary} style={styles.actionMenuIcon} />
+                <Text style={styles.actionMenuItemText}>Export Note (.md)</Text>
+              </TouchableOpacity>
+            )}
 
             <TouchableOpacity style={styles.actionMenuItem} onPress={() => {
               const item = actionMenu.item;
