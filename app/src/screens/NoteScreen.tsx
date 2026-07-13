@@ -659,7 +659,7 @@ export const NoteScreen = ({ navigation, route }: Props) => {
           </TouchableOpacity>
           <View style={styles.rightHeaderActions}>
             <TouchableOpacity style={[styles.circleBtn, styles.circleBtnSmall]} onPress={() => {
-              if (reminderAt) {
+              if (reminderAt && new Date(reminderAt) > new Date()) {
                 setAlertConfig({
                   visible: true,
                   title: 'Remove Reminder?',

@@ -43,7 +43,7 @@ export async function scheduleReminder(title: string, body: string, date: Date, 
       body,
       data: { itemId, itemType },
     },
-    trigger: Platform.OS === 'android' ? { type: 'calendar', date, channelId: 'default' } as any : date,
+    trigger: Platform.OS === 'android' ? { date, channelId: 'default' } as any : date,
   });
 }
 

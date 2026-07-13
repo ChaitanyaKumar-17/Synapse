@@ -68,7 +68,7 @@ export const TodoListScreen = ({ navigation, route }: Props) => {
           <TouchableOpacity 
             style={{ marginRight: 20 }} 
             onPress={() => {
-              if (reminderAt) {
+              if (reminderAt && new Date(reminderAt) > new Date()) {
                 setAlertConfig({
                   visible: true,
                   title: 'Remove Reminder?',
