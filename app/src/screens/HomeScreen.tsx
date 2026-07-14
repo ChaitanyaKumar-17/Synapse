@@ -13,6 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ChatOverlay } from '../components/ChatOverlay';
 import { exportNotebook } from '../lib/exportNotebook';
 import { exportSingleItem } from '../lib/exportNote';
+import { importFolder } from '../lib/importFolder';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Home'>;
@@ -485,15 +486,18 @@ export const HomeScreen = ({ navigation }: Props) => {
           </Sortable.Flex>
         </Animated.ScrollView>
       ) : (
-        <ScrollView
+        <FlatList
+          data={groupedData}
+          keyExtractor={(item, index) => item.type === 'row' ? `row-${index}` : `single-${index}`}
           style={{ flex: 1 }}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.listContainer}
-        >
-          {groupedData.map((item, index) => {
+          initialNumToRender={10}
+          windowSize={5}
+          renderItem={({ item, index }) => {
             if (item.type === 'row') {
               return (
-                <View key={`row-${index}`} style={styles.rowWrapper}>
+                <View style={styles.rowWrapper}>
                   {item.items.map((col: any) => (
                     <React.Fragment key={col.item.id}>
                       {renderCardContent(col.item, col.index)}
@@ -505,13 +509,13 @@ export const HomeScreen = ({ navigation }: Props) => {
             } else {
               const col = item.items[0];
               return (
-                <React.Fragment key={`single-${index}`}>
+                <React.Fragment>
                   {renderCardContent(col.item, col.index)}
                 </React.Fragment>
               );
             }
-          })}
-        </ScrollView>
+          }}
+        />
       )}
 
       {/* Floating Action Button */}

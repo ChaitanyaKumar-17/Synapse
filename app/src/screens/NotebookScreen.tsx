@@ -13,6 +13,7 @@ import { CustomAlert } from '../components/CustomAlert';
 import { ChatOverlay } from '../components/ChatOverlay';
 import { exportNotebook } from '../lib/exportNotebook';
 import { exportSingleItem } from '../lib/exportNote';
+import { importFolder } from '../lib/importFolder';
 import * as FileSystem from 'expo-file-system/legacy';
 import { decode } from 'base64-arraybuffer';
 
@@ -353,15 +354,18 @@ export const NotebookScreen = ({ navigation, route }: Props) => {
               <Feather name={sortConfig.order === 'asc' ? "arrow-up" : "arrow-down"} size={16} color={colors.textPrimary} />
             </TouchableOpacity>
           </View>
-          <ScrollView
+          <FlatList
+            data={sortedItems}
+            keyExtractor={(item, index) => `row-${index}`}
             style={{ flex: 1 }}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.listContainer}
-          >
-            {sortedItems.map((rowItems, rowIndex) => {
+            initialNumToRender={10}
+            windowSize={5}
+            renderItem={({ item: rowItems, index: rowIndex }) => {
               if (rowItems[0].type === 'notebook') {
                 return (
-                  <View key={`row-${rowIndex}`} style={styles.rowWrapper}>
+                  <View style={styles.rowWrapper}>
                     {rowItems.map((item) => (
                       <TouchableOpacity 
                         key={item.id}
@@ -394,7 +398,6 @@ export const NotebookScreen = ({ navigation, route }: Props) => {
               const cardColor = colors.cardColors[rowIndex % colors.cardColors.length];
               return (
                 <TouchableOpacity 
-                  key={`row-${rowIndex}`}
                   style={[styles.card, { backgroundColor: cardColor }]}
                   activeOpacity={0.9}
                   onPress={() => navigation.navigate('Note', { noteId: item.id, title: item.name })}
@@ -424,8 +427,8 @@ export const NotebookScreen = ({ navigation, route }: Props) => {
                   )}
                 </TouchableOpacity>
               );
-            })}
-          </ScrollView>
+            }}
+          />
         </View>
       )}
 
@@ -461,7 +464,31 @@ export const NotebookScreen = ({ navigation, route }: Props) => {
             </View>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.fabActionBtn} onPress={() => { toggleFab(); setModalConfig({ visible: true, type: 'notebook' }); }} activeOpacity={0.8}>
+          <TouchableOpacity style={styles.fabActionBtn} onPress={() => { 
+            toggleFab(); 
+            Alert.alert(
+              'Add Folder',
+              'Choose an action:',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'New Folder', onPress: () => setModalConfig({ visible: true, type: 'notebook' }) },
+                { text: 'Import Folder', onPress: async () => {
+                  if (!notebookId) return;
+                  try {
+                    setExportProgress('Starting import...');
+                    await importFolder(user!.id, notebookId, (msg) => setExportProgress(msg));
+                    fetchData();
+                  } catch (e: any) {
+                    if (e.message !== 'Directory permissions denied') {
+                      Alert.alert('Import Failed', e.message);
+                    }
+                  } finally {
+                    setExportProgress(null);
+                  }
+                }}
+              ]
+            );
+          }} activeOpacity={0.8}>
             <Text style={styles.fabActionLabel}>Folder</Text>
             <View style={[styles.fab, { backgroundColor: colors.surfaceLight }]}>
               <Feather name="folder" size={24} color={colors.textPrimary} />

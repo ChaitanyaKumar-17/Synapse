@@ -100,6 +100,7 @@ If the user asks general conversational questions (like 'who are you', 'how are 
 Your primary capability is answering questions based on the user's notes using the provided context.
 If the user asks you to modify, create, or delete any notes, tell them politely that making changes is not in your capabilities yet and you can only read and query notes.
 For questions about their notes, use the provided context. If the context does not contain the answer, say you don't know based on the notes.
+CRITICAL: If your final answer does NOT use any information from the provided Context (e.g. for general conversation), you MUST append the exact string "[NO_SOURCES_USED]" at the very end of your response.
 
 Context:
 ${contextText}`
@@ -119,13 +120,19 @@ ${contextText}`
     }
     
     const textBlock = chatData.message?.content?.find((c: any) => c.type === 'text');
-    const answer = textBlock?.text;
+    let answer = textBlock?.text;
     
     if (!answer) {
       throw new Error(`DEBUG_COHERE_RESPONSE: ${JSON.stringify(chatData)}`);
     }
 
-    return new Response(JSON.stringify({ answer, sources: uniqueSources }), {
+    let finalSources = uniqueSources;
+    if (answer.includes('[NO_SOURCES_USED]')) {
+      answer = answer.replace('[NO_SOURCES_USED]', '').trim();
+      finalSources = [];
+    }
+
+    return new Response(JSON.stringify({ answer, sources: finalSources }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 200,
     });

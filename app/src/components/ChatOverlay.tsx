@@ -204,6 +204,7 @@ export const ChatOverlay: React.FC<Props> = ({ visible, onClose, notebookId }) =
             keyExtractor={item => item.id}
             renderItem={renderMessage}
             contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
             onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
           />
 
